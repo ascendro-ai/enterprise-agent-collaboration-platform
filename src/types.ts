@@ -36,6 +36,7 @@ export interface StepRequirements {
   blueprint?: {
     greenList: string[]
     redList: string[]
+    outstandingQuestions?: string[]
   }
 }
 

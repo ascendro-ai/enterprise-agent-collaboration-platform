@@ -1,17 +1,20 @@
 import { useState } from 'react'
-import { Workflow as WorkflowIcon } from 'lucide-react'
+import { Workflow as WorkflowIcon, CheckCircle, AlertCircle } from 'lucide-react'
 import { useWorkflows } from '../contexts/WorkflowContext'
 import { checkWorkflowReadiness } from '../services/workflowReadinessService'
 import WorkflowFlowchart from './WorkflowFlowchart'
 import RequirementsGatherer from './RequirementsGatherer'
 import Button from './ui/Button'
 import Card from './ui/Card'
+import Modal from './ui/Modal'
 
 export default function Screen3Workflows() {
   const { workflows, activateWorkflow } = useWorkflows()
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const [isRequirementsMode, setIsRequirementsMode] = useState(false)
+  const [showActivationModal, setShowActivationModal] = useState(false)
+  const [activationMessage, setActivationMessage] = useState<{ type: 'success' | 'error'; title: string; message: string; errors?: string[] } | null>(null)
 
   const selectedWorkflow = selectedWorkflowId
     ? workflows.find((w) => w.id === selectedWorkflowId)
@@ -38,9 +41,20 @@ export default function Screen3Workflows() {
     const readiness = checkWorkflowReadiness(selectedWorkflowId)
     if (readiness.isReady) {
       activateWorkflow(selectedWorkflowId)
-      alert('Workflow activated successfully!')
+      setActivationMessage({
+        type: 'success',
+        title: 'Workflow Activated',
+        message: 'Your workflow has been successfully activated and is now ready to run.',
+      })
+      setShowActivationModal(true)
     } else {
-      alert(`Cannot activate workflow: ${readiness.errors.join(', ')}`)
+      setActivationMessage({
+        type: 'error',
+        title: 'Cannot Activate Workflow',
+        message: 'Please complete all requirements before activating this workflow.',
+        errors: readiness.errors,
+      })
+      setShowActivationModal(true)
     }
   }
 
@@ -160,6 +174,80 @@ export default function Screen3Workflows() {
           </>
         )}
       </div>
+
+      {/* Activation Modal */}
+      <Modal
+        isOpen={showActivationModal}
+        onClose={() => {
+          setShowActivationModal(false)
+          setActivationMessage(null)
+        }}
+        title=""
+        size="sm"
+      >
+        <div className="p-6">
+          {activationMessage?.type === 'success' ? (
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-4">
+                <CheckCircle className="w-8 h-8 text-green-600" />
+              </div>
+              <h3 className="text-xl font-semibold text-gray-dark mb-2">
+                {activationMessage.title}
+              </h3>
+              <p className="text-sm text-gray-darker mb-6">
+                {activationMessage.message}
+              </p>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setShowActivationModal(false)
+                  setActivationMessage(null)
+                }}
+                className="min-w-[120px]"
+              >
+                Got it
+              </Button>
+            </div>
+          ) : activationMessage?.type === 'error' ? (
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
+                <AlertCircle className="w-8 h-8 text-red-600" />
+              </div>
+              <h3 className="text-xl font-semibold text-gray-dark mb-2">
+                {activationMessage.title}
+              </h3>
+              <p className="text-sm text-gray-darker mb-4">
+                {activationMessage.message}
+              </p>
+              {activationMessage.errors && activationMessage.errors.length > 0 && (
+                <div className="w-full mb-6">
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-left">
+                    <p className="text-xs font-semibold text-red-800 mb-2">Issues to resolve:</p>
+                    <ul className="space-y-1">
+                      {activationMessage.errors.map((error, index) => (
+                        <li key={index} className="text-xs text-red-700 flex items-start gap-2">
+                          <span className="text-red-500 mt-0.5">•</span>
+                          <span>{error}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setShowActivationModal(false)
+                  setActivationMessage(null)
+                }}
+                className="min-w-[120px]"
+              >
+                OK
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </Modal>
     </div>
   )
 }

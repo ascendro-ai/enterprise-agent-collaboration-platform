@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { WorkflowStep } from '../types'
 import { Circle } from 'lucide-react'
 
@@ -29,7 +29,7 @@ function calculatePosition(index: number) {
   return { x, y, row, col: actualCol, isEvenRow }
 }
 
-// Get card styling based on step type and assignment
+// Get card styling based on assignment (all step types use same color scheme)
 function getCardStyles(step: WorkflowStep) {
   const baseStyles: {
     width: string
@@ -49,79 +49,38 @@ function getCardStyles(step: WorkflowStep) {
     borderRadius: '0.5rem',
   }
   
-  switch (step.type) {
-    case 'trigger':
-      return {
-        ...baseStyles,
-        backgroundColor: '#A3C8F0', // Light blue
-        borderColor: '#7BA3D4',
-        borderWidth: '2px',
-        borderRadius: '0.5rem',
-        color: '#1F2937',
-      }
-    
-    case 'action':
-      if (step.assignedTo?.type === 'ai') {
-        return {
-          ...baseStyles,
-          backgroundColor: '#D8B9FF', // Soft lavender
-          borderColor: '#B894E6',
-          borderWidth: '2px',
-          borderRadius: '0.5rem',
-          color: '#1F2937',
-        }
-      } else if (step.assignedTo?.type === 'human') {
-        return {
-          ...baseStyles,
-          backgroundColor: '#FFB29B', // Warm coral
-          borderColor: '#FF8A6B',
-          borderWidth: '2px',
-          borderRadius: '0.5rem',
-          color: '#1F2937',
-        }
-      } else {
-        return {
-          ...baseStyles,
-          backgroundColor: '#D8B9FF', // Default to soft lavender for unassigned
-          borderColor: '#B894E6',
-          borderWidth: '2px',
-          borderRadius: '0.5rem',
-          color: '#1F2937',
-        }
-      }
-    
-    case 'decision':
-      const isAI = step.assignedTo?.type === 'ai'
-      return {
-        ...baseStyles,
-        backgroundColor: isAI ? '#D8B9FF' : '#FFB29B',
-        borderColor: isAI ? '#B894E6' : '#FF8A6B',
-        borderWidth: '2px',
-        borderStyle: 'dashed',
-        borderRadius: '0.5rem',
-        color: '#1F2937',
-      }
-    
-    case 'end':
-      return {
-        ...baseStyles,
-        backgroundColor: '#A6E3E9', // Light teal
-        borderColor: '#7BC8D1',
-        borderWidth: '2px',
-        color: '#1F2937',
-        borderRadius: '0.5rem',
-        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-      }
-    
-    default:
-      return {
-        ...baseStyles,
-        backgroundColor: '#D8B9FF',
-        borderColor: '#B894E6',
-        borderWidth: '2px',
-        borderRadius: '0.5rem',
-        color: '#1F2937',
-      }
+  // All step types use assignment-based colors (washed out/faded)
+  if (step.assignedTo?.type === 'ai') {
+    return {
+      ...baseStyles,
+      backgroundColor: '#C4D1E3', // Greyish blue
+      borderColor: '#9BA8BA',
+      borderWidth: '2px',
+      borderRadius: '0.5rem',
+      color: '#1F2937',
+      borderStyle: step.type === 'decision' ? 'dashed' : 'solid',
+    }
+  } else if (step.assignedTo?.type === 'human') {
+    return {
+      ...baseStyles,
+      backgroundColor: '#F5C9B8', // Peach
+      borderColor: '#E8B5A0',
+      borderWidth: '2px',
+      borderRadius: '0.5rem',
+      color: '#1F2937',
+      borderStyle: step.type === 'decision' ? 'dashed' : 'solid',
+    }
+  } else {
+    // Default to AI color if unassigned
+    return {
+      ...baseStyles,
+      backgroundColor: '#C4D1E3', // Greyish blue
+      borderColor: '#9BA8BA',
+      borderWidth: '2px',
+      borderRadius: '0.5rem',
+      color: '#1F2937',
+      borderStyle: step.type === 'decision' ? 'dashed' : 'solid',
+    }
   }
 }
 
@@ -136,13 +95,22 @@ function getTypeLabel(type: string): string {
   }
 }
 
-// Check if step needs attention
-function needsAttention(step: WorkflowStep): boolean {
-  if (step.type === 'trigger' || step.type === 'end') return false
-  if (step.assignedTo?.type === 'ai' && !step.requirements?.isComplete) {
-    return true
+// Check step status for badge display
+function getStepStatus(step: WorkflowStep): 'needs-attention' | 'complete' | null {
+  // Only show badges for action steps assigned to AI
+  if (step.type === 'trigger' || step.type === 'end') return null
+  
+  // Only show badges for AI-assigned steps
+  if (step.assignedTo?.type !== 'ai') return null
+  
+  // If complete, show complete badge
+  if (step.requirements?.isComplete === true) {
+    return 'complete'
   }
-  return false
+  
+  // Default to "needs attention" for AI steps (even if no requirements yet)
+  // This indicates the step needs configuration
+  return 'needs-attention'
 }
 
 export default function WorkflowFlowchart({
@@ -152,11 +120,79 @@ export default function WorkflowFlowchart({
 }: WorkflowFlowchartProps) {
   const sortedSteps = [...steps].sort((a, b) => a.order - b.order)
   const [hoveredStepId, setHoveredStepId] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [panState, setPanState] = useState({ x: 0, y: 0 })
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const [wasDragging, setWasDragging] = useState(false)
 
   // Calculate container dimensions
   const totalRows = Math.ceil(sortedSteps.length / CARDS_PER_ROW)
   const containerWidth = CARDS_PER_ROW * HORIZONTAL_GAP
   const containerHeight = totalRows * VERTICAL_GAP + CARD_HEIGHT
+
+  // Handle mouse down for dragging
+  const handleMouseDown = (e: React.MouseEvent) => {
+    // Don't start dragging if clicking on a card
+    const target = e.target as HTMLElement
+    if (target.closest('.workflow-card')) {
+      return
+    }
+    setIsDragging(true)
+    setDragStart({
+      x: e.clientX - panState.x,
+      y: e.clientY - panState.y,
+    })
+    e.preventDefault()
+  }
+
+  // Handle mouse move for dragging
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return
+    setPanState({
+      x: e.clientX - dragStart.x,
+      y: e.clientY - dragStart.y,
+    })
+  }
+
+  // Handle mouse up to stop dragging
+  const handleMouseUp = () => {
+    if (isDragging) {
+      setWasDragging(true)
+      // Reset wasDragging after a short delay to allow click handlers to check it
+      setTimeout(() => setWasDragging(false), 100)
+    }
+    setIsDragging(false)
+  }
+
+  // Handle mouse leave to stop dragging
+  const handleMouseLeave = () => {
+    setIsDragging(false)
+  }
+
+  // Add global mouse event listeners for smooth dragging
+  useEffect(() => {
+    if (!isDragging) return
+
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      setPanState({
+        x: e.clientX - dragStart.x,
+        y: e.clientY - dragStart.y,
+      })
+    }
+
+    const handleGlobalMouseUp = () => {
+      setIsDragging(false)
+    }
+
+    window.addEventListener('mousemove', handleGlobalMouseMove)
+    window.addEventListener('mouseup', handleGlobalMouseUp)
+
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove)
+      window.removeEventListener('mouseup', handleGlobalMouseUp)
+    }
+  }, [isDragging, dragStart])
 
   // Generate arrow paths
   const generateArrows = () => {
@@ -207,12 +243,29 @@ export default function WorkflowFlowchart({
   const arrows = generateArrows()
 
   return (
-    <div className="relative w-full overflow-auto p-8" style={{ minHeight: `${containerHeight}px` }}>
-      <svg
-        className="absolute inset-0 pointer-events-none"
-        width={containerWidth}
-        height={containerHeight}
+    <div
+      ref={containerRef}
+      className="relative w-full h-full overflow-hidden"
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseLeave}
+      style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
+    >
+      <div
+        className="relative p-8"
+        style={{
+          minHeight: `${containerHeight}px`,
+          transform: `translate(${panState.x}px, ${panState.y}px)`,
+          transition: isDragging ? 'none' : 'transform 0.1s ease-out',
+        }}
       >
+        <svg
+          className="absolute inset-0 pointer-events-none"
+          width={containerWidth}
+          height={containerHeight}
+          style={{ left: 0, top: 0 }}
+        >
         {/* Arrow connectors */}
         {arrows.map((arrow, index) => (
           <g key={index}>
@@ -248,7 +301,7 @@ export default function WorkflowFlowchart({
         const styles = getCardStyles(step)
         const isSelected = selectedStepId === step.id
         const isHovered = hoveredStepId === step.id
-        const needsAttn = needsAttention(step)
+        const stepStatus = getStepStatus(step)
 
         const borderStyle = styles.borderStyle || 'solid'
         const borderWidth = styles.borderWidth || '1px'
@@ -259,7 +312,7 @@ export default function WorkflowFlowchart({
         return (
           <div
             key={step.id}
-            className="absolute cursor-pointer transition-all duration-200"
+            className="absolute cursor-pointer transition-all duration-200 workflow-card"
             style={{
               left: `${position.x}px`,
               top: `${position.y}px`,
@@ -273,7 +326,22 @@ export default function WorkflowFlowchart({
               transform: isHovered ? 'translateY(-4px)' : 'translateY(0)',
               zIndex: isSelected ? 10 : isHovered ? 5 : 1,
             }}
-            onClick={() => onStepClick?.(step.id)}
+            onClick={(e) => {
+              // Prevent card click if we were just dragging
+              if (wasDragging || isDragging) {
+                e.stopPropagation()
+                return
+              }
+              
+              // Human-assigned steps: do nothing (no requirements gathering)
+              if (step.assignedTo?.type === 'human') {
+                e.stopPropagation()
+                return
+              }
+              
+              // AI-assigned steps: open requirements gathering
+              onStepClick?.(step.id)
+            }}
             onMouseEnter={() => setHoveredStepId(step.id)}
             onMouseLeave={() => setHoveredStepId(null)}
           >
@@ -281,21 +349,32 @@ export default function WorkflowFlowchart({
             <div
               className="absolute -top-3 -left-3 w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold text-white shadow-md"
               style={{
-                backgroundColor: step.type === 'trigger' 
-                  ? '#7BA3D4' 
-                  : step.type === 'end'
-                  ? '#7BC8D1'
-                  : step.assignedTo?.type === 'human'
-                  ? '#FF8A6B'
-                  : '#B894E6',
+                backgroundColor: step.assignedTo?.type === 'human'
+                  ? '#E8B5A0' // Muted peach
+                  : '#9BA8BA', // Muted greyish blue
               }}
             >
               {index + 1}
             </div>
 
-            {/* Needs attention indicator */}
-            {needsAttn && (
-              <div className="absolute -top-2 -right-2 w-4 h-4 bg-yellow-400 rounded-full animate-pulse border-2 border-white"></div>
+            {/* Status badge */}
+            {stepStatus === 'needs-attention' && (
+              <div className="absolute top-2 right-2 z-20">
+                <div className="px-3 py-1 rounded-full text-xs font-semibold text-white shadow-md" style={{
+                  backgroundColor: '#F59E0B'
+                }}>
+                  Needs Attention
+                </div>
+              </div>
+            )}
+            {stepStatus === 'complete' && (
+              <div className="absolute top-2 right-2 z-20">
+                <div className="px-3 py-1 rounded-full text-xs font-semibold text-white shadow-md" style={{
+                  backgroundColor: '#10B981'
+                }}>
+                  Ready
+                </div>
+              </div>
             )}
 
             {/* Card content */}
@@ -326,27 +405,26 @@ export default function WorkflowFlowchart({
                   {step.label}
                 </p>
               </div>
-
-              {/* Assignment indicator */}
-              {step.assignedTo && (
-                <div className="mt-2 flex items-center gap-1">
-                  {step.assignedTo.type === 'ai' ? (
-                    <div className="w-2 h-2 bg-purple-600 rounded-full"></div>
-                  ) : (
-                    <div className="w-2 h-2 bg-orange-600 rounded-full"></div>
-                  )}
-                  <span
-                    className="text-xs font-medium"
-                    style={{ color: styles.color || '#6B7280' }}
-                  >
-                    {step.assignedTo.type === 'ai' ? 'AI' : 'Human'}
-                  </span>
-                </div>
-              )}
             </div>
           </div>
         )
       })}
+      </div>
+
+      {/* Legend */}
+      <div className="absolute bottom-4 right-4 bg-white border border-gray-lighter rounded-lg shadow-lg p-4 z-20 pointer-events-none">
+        <div className="text-xs font-semibold text-gray-darker mb-2">LEGEND</div>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#C4D1E3' }}></div>
+            <span className="text-xs text-gray-dark">AI Assigned</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#F5C9B8' }}></div>
+            <span className="text-xs text-gray-dark">Human Assigned</span>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

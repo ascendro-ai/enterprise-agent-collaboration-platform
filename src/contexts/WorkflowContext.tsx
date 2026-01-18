@@ -13,6 +13,7 @@ interface WorkflowContextType {
   updateConversation: (id: string, messages: ConversationMessage[]) => void
   getConversationByWorkflowId: (workflowId: string) => ConversationSession | undefined
   updateStepRequirements: (workflowId: string, stepId: string, requirements: WorkflowStep['requirements']) => void
+  updateStepAssignment: (workflowId: string, stepId: string, assignedTo: WorkflowStep['assignedTo']) => void
 }
 
 const WorkflowContext = createContext<WorkflowContextType | undefined>(undefined)
@@ -114,6 +115,25 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     []
   )
 
+  const updateStepAssignment = useCallback(
+    (workflowId: string, stepId: string, assignedTo: WorkflowStep['assignedTo']) => {
+      setWorkflows((prev) =>
+        prev.map((w) =>
+          w.id === workflowId
+            ? {
+                ...w,
+                steps: w.steps.map((s) =>
+                  s.id === stepId ? { ...s, assignedTo } : s
+                ),
+                updatedAt: new Date(),
+              }
+            : w
+        )
+      )
+    },
+    []
+  )
+
   return (
     <WorkflowContext.Provider
       value={{
@@ -127,6 +147,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         updateConversation,
         getConversationByWorkflowId,
         updateStepRequirements,
+        updateStepAssignment,
       }}
     >
       {children}

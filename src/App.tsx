@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { AppProvider, useApp } from './contexts/AppContext'
 import { WorkflowProvider } from './contexts/WorkflowContext'
 import { TeamProvider } from './contexts/TeamContext'
@@ -6,9 +7,32 @@ import Screen1Consultant from './components/Screen1Consultant'
 import Screen2OrgChart from './components/Screen2OrgChart'
 import Screen3Workflows from './components/Screen3Workflows'
 import Screen4ControlRoom from './components/Screen4ControlRoom'
+import { handleGmailCallback } from './services/gmailService'
 
 function AppContent() {
   const { activeTab, user } = useApp()
+
+  // Handle Gmail OAuth callback
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search)
+    const code = urlParams.get('code')
+    const path = window.location.pathname
+
+    // Check if this is the Gmail OAuth callback
+    if (path === '/auth/gmail/callback' && code) {
+      handleGmailCallback(code)
+        .then(() => {
+          // Clean up URL after successful auth
+          window.history.replaceState({}, document.title, '/')
+        })
+        .catch((error) => {
+          console.error('Gmail OAuth callback error:', error)
+          const errorMessage = error instanceof Error ? error.message : 'Failed to authenticate with Gmail. Please try again.'
+          alert(errorMessage)
+          window.history.replaceState({}, document.title, '/')
+        })
+    }
+  }, [])
 
   const renderScreen = () => {
     switch (activeTab) {

@@ -152,6 +152,32 @@ IMPORTANT - DO NOT include question counts or progress indicators in your respon
     'that works!'
   ]
 
+  // Phrases that indicate user wants to move forward/build (standalone signals)
+  const readinessPhrases = [
+    'let\'s build',
+    'let\'s build!',
+    'ready to build',
+    'ready to build!',
+    'let\'s get started',
+    'let\'s get started!',
+    'let\'s go',
+    'let\'s go!',
+    'let\'s do it',
+    'let\'s do it!',
+    'ready',
+    'ready!',
+    'i\'m ready',
+    'i\'m ready!',
+    'ready to go',
+    'ready to go!',
+    'let\'s move forward',
+    'let\'s move forward!',
+    'move to workflows',
+    'go to workflows',
+    'check workflows',
+    'look at workflows'
+  ]
+
   // Check if the last assistant message was a summary/question
   const lastAssistantMessage = conversationHistory
     .filter(msg => msg.sender === 'system')
@@ -162,7 +188,9 @@ IMPORTANT - DO NOT include question counts or progress indicators in your respon
     lastAssistantMessage.text.toLowerCase().includes('here\'s what we discussed') ||
     lastAssistantMessage.text.toLowerCase().includes('does that sound right') ||
     lastAssistantMessage.text.toLowerCase().includes('are you ready') ||
-    lastAssistantMessage.text.toLowerCase().includes('workflow steps')
+    lastAssistantMessage.text.toLowerCase().includes('workflow steps') ||
+    lastAssistantMessage.text.toLowerCase().includes('your workflows') ||
+    lastAssistantMessage.text.toLowerCase().includes('ready to build')
   )
 
   // Check if we've already summarized recently (last 2 messages)
@@ -172,18 +200,24 @@ IMPORTANT - DO NOT include question counts or progress indicators in your respon
     (msg.text.toLowerCase().includes('here\'s what i understand') ||
      msg.text.toLowerCase().includes('here\'s what we discussed') ||
      msg.text.toLowerCase().includes('workflow steps') ||
-     msg.text.toLowerCase().includes('1. you receive'))
+     msg.text.toLowerCase().includes('1. you receive') ||
+     msg.text.toLowerCase().includes('your workflows'))
   )
 
-  // Only treat as final confirmation if:
-  // 1. It matches a strong confirmation phrase, AND
-  // 2. The last message was a summary/question (not just an intermediate question)
-  const isFinalConfirmation = strongConfirmations.some(phrase => 
-    userInputLower.includes(phrase) || userInputLower === phrase.replace(/[!?.]/g, '')
-  ) && lastMessageWasSummary
+  // Check if user is indicating readiness to move forward (standalone signal)
+  const isReadinessSignal = readinessPhrases.some(phrase => 
+    userInputLower.includes(phrase)
+  )
+
+  // Final confirmation: either strong confirmation after summary, OR readiness signal
+  const isFinalConfirmation = isReadinessSignal || (
+    strongConfirmations.some(phrase => 
+      userInputLower.includes(phrase) || userInputLower === phrase.replace(/[!?.]/g, '')
+    ) && lastMessageWasSummary
+  )
 
   // Intermediate acknowledgments (okay, ok, works, yep) - just acknowledge and continue
-  const isIntermediateAck = !isFinalConfirmation && (
+  const isIntermediateAck = !isFinalConfirmation && !isReadinessSignal && (
     userInputLower === 'ok' ||
     userInputLower === 'okay' ||
     userInputLower === 'works' ||
@@ -199,12 +233,13 @@ ${conversationText}
 
 The user just said: "${userInput}"
 
-${isFinalConfirmation ? `The user has given final confirmation that they're happy with the workflow. Simply acknowledge briefly (1-2 sentences MAX) and let them know they can check "Your Workflows" tab. Do NOT repeat the workflow steps. Do NOT summarize again. Do NOT ask if they're ready. Just acknowledge and wrap up.` : isIntermediateAck ? `The user is acknowledging what you said. Simply acknowledge their acknowledgment briefly and continue the conversation naturally. Do NOT summarize. Just acknowledge and ask your next question or continue exploring.` : hasRecentSummary ? `The user is continuing the conversation. Do NOT summarize again - we just did that. Ask a follow-up question if needed, or acknowledge what they said.` : questionCount >= maxQuestions ? `You have reached the maximum number of questions. Provide a helpful summary focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Team" tab, they can build their own org structure and create digital workers to execute these workflows. Do NOT list individual AI agents - just confirm the workflow steps.` : questionCount >= 3 ? `You have asked ${questionCount} questions. Provide a summary of what you understand about the workflow, focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Team" tab, they can build their own org structure and create digital workers to execute these workflows. Ask if they're ready to build or if they want to clarify anything.` : `Ask your next question to understand the workflow better. Focus on high-level workflow understanding, not technical details.`}`
+${isFinalConfirmation ? `The user has indicated they're ready to move forward and build. This is a clear signal to wrap up. Give a brief, friendly acknowledgment (1-2 sentences MAX) and let them know they can check "Your Workflows" tab to see the workflow and start configuring it. Do NOT ask any questions. Do NOT ask if they want to clarify anything. Do NOT summarize the workflow again. Just acknowledge and wrap up gracefully.` : isIntermediateAck ? `The user is acknowledging what you said. Simply acknowledge their acknowledgment briefly and continue the conversation naturally. Do NOT summarize. Just acknowledge and ask your next question or continue exploring.` : hasRecentSummary ? `The user is continuing the conversation after a recent summary. Do NOT summarize again - we just did that. If they're asking a question, answer it. If they're providing more info, acknowledge it. Do NOT ask new questions unless they're directly related to what they just said.` : questionCount >= maxQuestions ? `You have reached the maximum number of questions. Provide a helpful summary focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Workflows" tab, they can see the workflow and start configuring it. Do NOT list individual AI agents - just confirm the workflow steps. Do NOT ask if they're ready - just summarize and wrap up.` : questionCount >= 3 ? `You have asked ${questionCount} questions. Provide a summary of what you understand about the workflow, focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Workflows" tab, they can see the workflow and start configuring it. Do NOT ask if they're ready to build - just summarize and let them know where to go next.` : `Ask your next question to understand the workflow better. Focus on high-level workflow understanding, not technical details.`}`
 
   try {
     const result = await model.generateContent(prompt)
     const response = result.response.text()
-    const isComplete = questionCount >= maxQuestions
+    // Mark as complete if: reached max questions OR user indicated readiness
+    const isComplete = questionCount >= maxQuestions || (isFinalConfirmation === true)
 
     return { response, isComplete }
   } catch (error) {
@@ -328,10 +363,15 @@ ${conversationText}`
 // Requirements gathering LLM
 export async function buildAutomation(
   step: WorkflowStep,
-  conversationHistory: ConversationMessage[]
+  conversationHistory: ConversationMessage[],
+  createTaskConversation?: ConversationMessage[]
 ): Promise<{
   requirementsText: string
-  blueprint: { greenList: string[]; redList: string[] }
+  blueprint: { 
+    greenList: string[]
+    redList: string[]
+    outstandingQuestions?: string[]
+  }
   customRequirements: string[]
 }> {
   if (!genAI) {
@@ -344,19 +384,51 @@ export async function buildAutomation(
     .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
     .join('\n')
 
+  // Add context from Create a Task conversation if available
+  const createTaskContext = createTaskConversation
+    ? `\n\nCONTEXT FROM INITIAL WORKFLOW CONVERSATION:\n${createTaskConversation
+        .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+        .join('\n')}`
+    : ''
+
   const prompt = `You are helping gather requirements for a workflow step: "${step.label}"
+
+${createTaskContext}
+
+STRATEGIC APPROACH:
+1. Analyze what information you have vs. what you need
+2. Generate outstanding questions (what you still need to discover)
+3. Based on answers so far, infer greenList (allowed actions) and redList (forbidden actions)
+4. Use outstanding questions to identify gaps in greenList/redList
+
+RELATIONSHIP BETWEEN QUESTIONS AND CONSTRAINTS:
+- Outstanding questions help discover what should go in greenList/redList
+- As questions are answered, you can infer more specific constraints
+- GreenList/redList might reveal new questions (e.g., "If we can't do X, how do we handle Y?")
+- They work together iteratively - questions → constraints → more questions
 
 Based on the conversation, extract:
 1. Requirements text (what needs to be done)
-2. Blueprint with greenList (allowed actions/behaviors) and redList (forbidden actions/behaviors)
-3. Custom requirements array
+2. Outstanding questions - strategic questions you need answered to fully understand requirements (prioritize by importance)
+3. GreenList - allowed actions/behaviors (infer from what's been discussed, even if partially)
+4. RedList - forbidden actions/behaviors (infer from what's been discussed, even if partially)
+5. Custom requirements array
+
+IMPORTANT:
+- Generate outstanding questions FIRST based on gaps in understanding
+- Then infer greenList/redList from what's been answered
+- If a question hasn't been answered yet, you might not have enough info for certain greenList/redList items - that's okay
+- Outstanding questions should help discover what's MISSING from greenList/redList
+- Be specific and actionable with questions (not vague)
+- Order questions by priority (most critical first)
 
 Return ONLY a valid JSON object:
 {
   "requirementsText": "Description of requirements",
   "blueprint": {
     "greenList": ["allowed action 1", "allowed action 2"],
-    "redList": ["forbidden action 1", "forbidden action 2"]
+    "redList": ["forbidden action 1", "forbidden action 2"],
+    "outstandingQuestions": ["question 1", "question 2"]
   },
   "customRequirements": ["requirement 1", "requirement 2"]
 }
@@ -377,12 +449,121 @@ ${conversationText}`
 
     return {
       requirementsText: data.requirementsText || '',
-      blueprint: data.blueprint || { greenList: [], redList: [] },
+      blueprint: {
+        greenList: data.blueprint?.greenList || [],
+        redList: data.blueprint?.redList || [],
+        outstandingQuestions: data.blueprint?.outstandingQuestions || [],
+      },
       customRequirements: data.customRequirements || [],
     }
   } catch (error) {
     console.error('Error building automation:', error)
     throw new Error('Failed to build automation requirements')
+  }
+}
+
+// Generate initial message for requirements gathering
+export async function getInitialRequirementsMessage(
+  step: WorkflowStep,
+  workflowName: string,
+  createTaskConversation?: ConversationMessage[]
+): Promise<string> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const createTaskContext = createTaskConversation
+    ? `\n\nCONTEXT FROM INITIAL WORKFLOW CONVERSATION:\n${createTaskConversation
+        .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+        .join('\n')}`
+    : ''
+
+  const prompt = `You are a requirements gathering specialist. A user is about to configure requirements for a workflow step.
+
+WORKFLOW: ${workflowName}
+STEP: "${step.label}"
+STEP TYPE: ${step.type}
+ASSIGNED TO: ${step.assignedTo?.type === 'ai' ? 'AI Agent' : 'Human'}
+
+${createTaskContext}
+
+Generate a friendly, conversational initial message to start gathering requirements for this step. The message should:
+- Welcome them to requirements gathering
+- Reference the workflow context if available
+- Ask an initial exploratory question to understand what this step needs to accomplish
+- Be conversational and friendly, not directive
+
+Return ONLY the message text, no JSON, no quotes.`
+
+  try {
+    const result = await model.generateContent(prompt)
+    return result.response.text().trim()
+  } catch (error) {
+    console.error('Error generating initial message:', error)
+    return `Hi! I'm here to help you configure requirements for "${step.label}". What does this step need to accomplish?`
+  }
+}
+
+// Conversational requirements gathering LLM - responds to user messages
+export async function gatherRequirementsConversation(
+  step: WorkflowStep,
+  conversationHistory: ConversationMessage[],
+  createTaskConversation?: ConversationMessage[]
+): Promise<string> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const conversationText = conversationHistory
+    .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+    .join('\n')
+
+  // Add context from Create a Task conversation if available
+  const createTaskContext = createTaskConversation
+    ? `\n\nCONTEXT FROM INITIAL WORKFLOW CONVERSATION:\n${createTaskConversation
+        .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+        .join('\n')}`
+    : ''
+
+  const prompt = `You are a friendly requirements gathering specialist helping configure an AI agent for a specific workflow step. Your role is to understand what the agent needs to do and gather detailed requirements through natural conversation.
+
+WORKFLOW STEP: "${step.label}"
+STEP TYPE: ${step.type}
+ASSIGNED TO: ${step.assignedTo?.type === 'ai' ? 'AI Agent' : 'Human'}
+
+${createTaskContext}
+
+CONVERSATION STYLE:
+- Be friendly, conversational, and helpful
+- Acknowledge what the user just said before responding
+- Ask one question at a time when you need clarification
+- Reference the workflow context when relevant
+- Focus on understanding the specific requirements for this step
+- Be exploratory and collaborative, not directive
+- When you have enough information, acknowledge it naturally
+
+IMPORTANT:
+- Respond conversationally to what the user just said
+- If they answered a question, acknowledge their answer
+- If they provided information, acknowledge it and ask a follow-up if needed
+- If they're asking a question, answer it helpfully
+- Keep responses concise and focused (2-4 sentences typically)
+
+Conversation so far:
+${conversationText}
+
+Generate a conversational response to the user's last message. Be friendly, acknowledge what they said, and continue gathering requirements naturally. Return ONLY the response text, no JSON, no quotes.`
+
+  try {
+    const result = await model.generateContent(prompt)
+    return result.response.text().trim()
+  } catch (error) {
+    console.error('Error generating requirements conversation:', error)
+    throw new Error('Failed to generate requirements conversation')
   }
 }
 

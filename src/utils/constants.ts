@@ -10,7 +10,7 @@ export const STORAGE_KEYS = {
 
 // Gemini API Configuration
 export const GEMINI_CONFIG = {
-  MODEL: 'gemini-2.0-flash-exp',
+  MODEL: 'gemini-3-pro-preview', // Using latest Gemini 3 Pro model (highest capabilities, better reasoning)
   MAX_QUESTIONS: 5,
   TEMPERATURE: 0.7,
 } as const

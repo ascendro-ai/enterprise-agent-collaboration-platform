@@ -2,6 +2,7 @@ import { storage } from '../utils/storage'
 import type { GmailAuthState } from '../types'
 
 const CLIENT_ID = import.meta.env.VITE_GMAIL_CLIENT_ID || ''
+const CLIENT_SECRET = import.meta.env.VITE_GMAIL_CLIENT_SECRET || ''
 const REDIRECT_URI = window.location.origin + '/auth/gmail/callback'
 const SCOPES = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send'
 
@@ -73,7 +74,11 @@ export async function initiateGmailAuth(): Promise<void> {
 export async function handleGmailCallback(code: string): Promise<void> {
   const verifier = sessionStorage.getItem('gmail_code_verifier')
   if (!verifier) {
-    throw new Error('Code verifier not found')
+    throw new Error('Code verifier not found. Please try connecting again - your session may have expired.')
+  }
+
+  if (!CLIENT_ID) {
+    throw new Error('Gmail OAuth client ID is not configured. Please check your environment variables.')
   }
 
   try {
@@ -85,35 +90,62 @@ export async function handleGmailCallback(code: string): Promise<void> {
       },
       body: new URLSearchParams({
         client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET, // Required for Web application client type
         code,
         redirect_uri: REDIRECT_URI,
         grant_type: 'authorization_code',
-        code_verifier: verifier,
+        code_verifier: verifier, // PKCE - used together with client_secret for web apps
       }),
     })
 
     if (!tokenResponse.ok) {
-      throw new Error('Failed to exchange code for tokens')
+      let errorData: any = {}
+      try {
+        const errorText = await tokenResponse.text()
+        errorData = errorText ? JSON.parse(errorText) : {}
+      } catch (e) {
+        console.error('Failed to parse error response:', e)
+      }
+      
+      console.error('Token exchange error details:', {
+        status: tokenResponse.status,
+        statusText: tokenResponse.statusText,
+        error: errorData,
+        redirectUri: REDIRECT_URI,
+        hasClientId: !!CLIENT_ID,
+        hasCode: !!code,
+        hasVerifier: !!verifier,
+      })
+      
+      // Provide more specific error messages
+      if (tokenResponse.status === 400) {
+        const errorDesc = errorData.error_description || errorData.error || 'Unknown error'
+        if (errorDesc.includes('redirect_uri_mismatch')) {
+          throw new Error(`Redirect URI mismatch. Expected: ${REDIRECT_URI}. Please check your Google Cloud Console settings.`)
+        } else if (errorDesc.includes('invalid_grant')) {
+          throw new Error('Authorization code expired or already used. Please try connecting again.')
+        } else if (errorDesc.includes('invalid_client')) {
+          throw new Error('Invalid client ID, client secret, or PKCE verification failed. Please check your VITE_GMAIL_CLIENT_ID and VITE_GMAIL_CLIENT_SECRET environment variables and ensure PKCE is properly configured.')
+        } else {
+          throw new Error(`Google OAuth error: ${errorDesc}`)
+        }
+      } else if (tokenResponse.status === 401) {
+        throw new Error('Invalid client ID or redirect URI mismatch. Please check your Google Cloud Console configuration.')
+      } else {
+        throw new Error(`Google OAuth error (${tokenResponse.status}): ${errorData.error_description || errorData.error || 'Failed to exchange authorization code for tokens'}`)
+      }
     }
 
     const tokens = await tokenResponse.json()
 
-    // Get user info
-    const userInfoResponse = await fetch(
-      'https://www.googleapis.com/oauth2/v2/userinfo',
-      {
-        headers: {
-          Authorization: `Bearer ${tokens.access_token}`,
-        },
-      }
-    )
+    if (!tokens.access_token) {
+      throw new Error('No access token received from Google')
+    }
 
-    const userInfo = await userInfoResponse.json()
-
-    // Save auth state
+    // Save auth state (email can be fetched from Gmail API later if needed)
     const authState: GmailAuthState = {
       authenticated: true,
-      account: userInfo.email,
+      account: undefined, // Optional - can be fetched from Gmail API profile if needed
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
       expiresAt: tokens.expires_in
@@ -128,7 +160,11 @@ export async function handleGmailCallback(code: string): Promise<void> {
     window.location.href = '/'
   } catch (error) {
     console.error('Error handling Gmail callback:', error)
-    throw error
+    // Re-throw with more context if it's not already an Error
+    if (error instanceof Error) {
+      throw error
+    }
+    throw new Error(`Gmail authentication failed: ${String(error)}`)
   }
 }
 
@@ -191,6 +227,35 @@ export async function getGmailAccessToken(): Promise<string | null> {
   }
 
   return auth.accessToken || null
+}
+
+// Get user email from Gmail API profile
+export async function getGmailProfile(): Promise<{ email: string } | null> {
+  const accessToken = await getGmailAccessToken()
+  if (!accessToken) {
+    return null
+  }
+
+  try {
+    const response = await fetch(
+      'https://www.googleapis.com/gmail/v1/users/me/profile',
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    )
+
+    if (!response.ok) {
+      return null
+    }
+
+    const profile = await response.json()
+    return { email: profile.emailAddress }
+  } catch (error) {
+    console.error('Error fetching Gmail profile:', error)
+    return null
+  }
 }
 
 // Send email via Gmail API

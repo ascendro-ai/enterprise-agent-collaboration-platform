@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Send, ArrowLeft, Plus, Upload, Mail, Bot } from 'lucide-react'
-import { buildAutomation } from '../services/geminiService'
+import { buildAutomation, getInitialRequirementsMessage, gatherRequirementsConversation } from '../services/geminiService'
+import { initiateGmailAuth, isGmailAuthenticated } from '../services/gmailService'
 import { useWorkflows } from '../contexts/WorkflowContext'
 import type { WorkflowStep, ConversationMessage } from '../types'
 import Input from './ui/Input'
@@ -24,30 +25,92 @@ export default function RequirementsGatherer({
   onComplete,
   onBack,
 }: RequirementsGathererProps) {
-  const { updateStepRequirements } = useWorkflows()
+  const { updateStepRequirements, getConversationByWorkflowId } = useWorkflows()
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [blueprint, setBlueprint] = useState<{
     greenList: string[]
     redList: string[]
+    outstandingQuestions?: string[]
   } | null>(null)
   const [requirementsText, setRequirementsText] = useState('')
   const [showPlusMenu, setShowPlusMenu] = useState(false)
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
+  const [gmailConnected, setGmailConnected] = useState(isGmailAuthenticated())
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
+
+  // Check Gmail connection status periodically
+  useEffect(() => {
+    const checkGmail = () => {
+      setGmailConnected(isGmailAuthenticated())
+    }
+    checkGmail()
+    const interval = setInterval(checkGmail, 2000)
+    return () => clearInterval(interval)
+  }, [])
 
   // Load existing requirements if any
   useEffect(() => {
     if (step.requirements) {
       setRequirementsText(step.requirements.requirementsText || '')
       setBlueprint(step.requirements.blueprint || null)
-      if (step.requirements.chatHistory) {
+      if (step.requirements.chatHistory && step.requirements.chatHistory.length > 0) {
         setMessages(step.requirements.chatHistory)
       }
     }
   }, [step])
+
+  // Send initial message when component mounts (if no existing chat history)
+  useEffect(() => {
+    // Only send initial message if no existing chat history
+    const hasExistingHistory = step.requirements?.chatHistory && step.requirements.chatHistory.length > 0
+    if (!hasExistingHistory) {
+      const sendInitialMessage = async () => {
+        setIsLoading(true)
+        try {
+          // Get conversation context from Create a Task
+          const createTaskConversation = getConversationByWorkflowId(workflowId)
+          
+          const initialMessage = await getInitialRequirementsMessage(
+            step,
+            workflowName || 'Workflow',
+            createTaskConversation?.messages
+          )
+          
+          const systemMessage: ConversationMessage = {
+            sender: 'system',
+            text: initialMessage,
+            timestamp: new Date(),
+          }
+          
+          setMessages([systemMessage])
+          
+          // Save initial message to step requirements
+          const requirements = {
+            isComplete: false,
+            requirementsText: '',
+            chatHistory: [systemMessage],
+            integrations: {
+              gmail: step.requirements?.integrations?.gmail || false,
+            },
+            customRequirements: [],
+            blueprint: step.requirements?.blueprint || { greenList: [], redList: [] },
+          }
+          
+          updateStepRequirements(workflowId, step.id, requirements)
+        } catch (error) {
+          console.error('Error sending initial message:', error)
+        } finally {
+          setIsLoading(false)
+        }
+      }
+      
+      sendInitialMessage()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflowId, step.id]) // Only run once when step is selected
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -80,17 +143,50 @@ export default function RequirementsGatherer({
     setIsLoading(true)
 
     try {
-      const result = await buildAutomation(step, newMessages)
-      setRequirementsText(result.requirementsText)
-      setBlueprint(result.blueprint)
-
+      // Get conversation context from Create a Task
+      const createTaskConversation = getConversationByWorkflowId(workflowId)
+      
+      // Generate conversational response AND extract blueprint data in parallel
+      const [conversationalResponse, blueprintResult] = await Promise.all([
+        gatherRequirementsConversation(
+          step,
+          newMessages,
+          createTaskConversation?.messages
+        ),
+        buildAutomation(
+          step,
+          newMessages,
+          createTaskConversation?.messages
+        )
+      ])
+      
+      // Update blueprint silently
+      setRequirementsText(blueprintResult.requirementsText)
+      setBlueprint(blueprintResult.blueprint)
+      
+      // Add conversational response to chat
       const systemMessage: ConversationMessage = {
         sender: 'system',
-        text: `Requirements updated. Blueprint generated with ${result.blueprint.greenList.length} allowed actions and ${result.blueprint.redList.length} restrictions.`,
+        text: conversationalResponse,
         timestamp: new Date(),
       }
-
-      setMessages([...newMessages, systemMessage])
+      
+      const updatedMessages = [...newMessages, systemMessage]
+      setMessages(updatedMessages)
+      
+      // IMPORTANT: Save chatHistory to step requirements after each message exchange
+      const requirements = {
+        isComplete: false,
+        requirementsText: blueprintResult.requirementsText,
+        chatHistory: updatedMessages,
+        integrations: {
+          gmail: step.requirements?.integrations?.gmail || false,
+        },
+        customRequirements: blueprintResult.customRequirements || [],
+        blueprint: blueprintResult.blueprint,
+      }
+      
+      updateStepRequirements(workflowId, step.id, requirements)
     } catch (error) {
       console.error('Error building automation:', error)
       const errorMessage: ConversationMessage = {
@@ -98,7 +194,22 @@ export default function RequirementsGatherer({
         text: 'Sorry, I encountered an error. Please try again.',
         timestamp: new Date(),
       }
-      setMessages([...newMessages, errorMessage])
+      const errorMessages = [...newMessages, errorMessage]
+      setMessages(errorMessages)
+      
+      // Save error state to requirements as well
+      const requirements = {
+        isComplete: false,
+        requirementsText: step.requirements?.requirementsText || '',
+        chatHistory: errorMessages,
+        integrations: {
+          gmail: step.requirements?.integrations?.gmail || false,
+        },
+        customRequirements: step.requirements?.customRequirements || [],
+        blueprint: step.requirements?.blueprint || { greenList: [], redList: [] },
+      }
+      
+      updateStepRequirements(workflowId, step.id, requirements)
     } finally {
       setIsLoading(false)
     }
@@ -110,7 +221,7 @@ export default function RequirementsGatherer({
       requirementsText,
       chatHistory: messages,
       integrations: {
-        gmail: step.requirements?.integrations?.gmail || false,
+        gmail: gmailConnected || step.requirements?.integrations?.gmail || false,
       },
       customRequirements: blueprint ? [] : [],
       blueprint: blueprint || { greenList: [], redList: [] },
@@ -191,14 +302,6 @@ export default function RequirementsGatherer({
                     className={`flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     <div className="flex items-start gap-2 max-w-2xl">
-                      {message.sender === 'system' && (
-                        <div className="flex-shrink-0">
-                          <div className="w-8 h-8 bg-purple-600 rounded-full flex items-center justify-center">
-                            <span className="text-white text-xs font-semibold">L</span>
-                          </div>
-                          <span className="text-xs text-gray-darker block mt-1">Lumi</span>
-                        </div>
-                      )}
                       <div
                         className={`rounded-lg px-4 py-2 text-sm whitespace-pre-wrap ${
                           message.sender === 'user'
@@ -213,12 +316,6 @@ export default function RequirementsGatherer({
                 ))}
                 {isLoading && (
                   <div className="flex items-start gap-2">
-                    <div className="flex-shrink-0">
-                      <div className="w-8 h-8 bg-purple-600 rounded-full flex items-center justify-center">
-                        <span className="text-white text-xs font-semibold">L</span>
-                      </div>
-                      <span className="text-xs text-gray-darker block mt-1">Lumi</span>
-                    </div>
                     <div className="flex gap-1 px-4 py-2">
                       <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
                       <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
@@ -275,14 +372,26 @@ export default function RequirementsGatherer({
                       Upload File
                     </button>
                     <button
-                      onClick={() => {
-                        // Handle Gmail connect
+                      onClick={async () => {
                         setShowPlusMenu(false)
+                        try {
+                          await initiateGmailAuth()
+                          // Note: initiateGmailAuth redirects to Google, so code below won't run
+                          // The connection status will be updated when user returns via useEffect
+                        } catch (error) {
+                          console.error('Error initiating Gmail auth:', error)
+                          alert('Failed to connect Gmail. Please check your Gmail OAuth client ID configuration.')
+                        }
                       }}
-                      className="w-full px-4 py-2 text-left text-sm text-gray-dark hover:bg-gray-lighter flex items-center gap-2 border-t border-gray-lighter"
+                      disabled={gmailConnected}
+                      className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 border-t border-gray-lighter ${
+                        gmailConnected
+                          ? 'text-gray-400 cursor-not-allowed'
+                          : 'text-gray-dark hover:bg-gray-lighter'
+                      }`}
                     >
                       <Mail className="h-4 w-4" />
-                      Connect Gmail
+                      {gmailConnected ? 'Gmail Connected' : 'Connect Gmail'}
                     </button>
                   </div>
                 )}
@@ -374,6 +483,31 @@ export default function RequirementsGatherer({
                 </div>
               ) : (
                 <p className="text-xs text-gray-darker italic">No hard limits defined yet...</p>
+              )}
+            </div>
+
+            {/* Outstanding Questions Section */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-darker">
+                  Outstanding Questions
+                </h3>
+              </div>
+              {blueprint && blueprint.outstandingQuestions && blueprint.outstandingQuestions.length > 0 ? (
+                <div className="space-y-2">
+                  {blueprint.outstandingQuestions.map((question, idx) => (
+                    <Card
+                      key={idx}
+                      variant="outlined"
+                      className="p-3 bg-yellow-50 border-yellow-200"
+                    >
+                      <p className="text-sm text-yellow-900">{question}</p>
+                    </Card>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-darker italic">No outstanding questions...</p>
               )}
             </div>
           </div>

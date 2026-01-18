@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, Plus, Mic, ArrowLeft } from 'lucide-react'
+import { Send, Plus, Mic, ArrowLeft, Upload, Mail } from 'lucide-react'
 import { useWorkflows } from '../contexts/WorkflowContext'
 import { consultWorkflow, extractWorkflowFromConversation } from '../services/geminiService'
+import { initiateGmailAuth, isGmailAuthenticated } from '../services/gmailService'
 import { GEMINI_CONFIG } from '../utils/constants'
 import type { ConversationMessage, ConversationSession } from '../types'
 import Input from './ui/Input'
@@ -22,13 +23,37 @@ export default function Screen1Consultant() {
   const [questionCount, setQuestionCount] = useState(0)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [currentWorkflowId, setCurrentWorkflowId] = useState<string | null>(null)
+  const [showPlusMenu, setShowPlusMenu] = useState(false)
+  const [gmailConnected, setGmailConnected] = useState(isGmailAuthenticated())
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const extractionTimeoutRef = useRef<number | null>(null)
+  const plusMenuRef = useRef<HTMLDivElement>(null)
 
   // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Check Gmail connection status periodically
+  useEffect(() => {
+    const checkGmail = () => {
+      setGmailConnected(isGmailAuthenticated())
+    }
+    checkGmail()
+    const interval = setInterval(checkGmail, 2000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Close plus menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (plusMenuRef.current && !plusMenuRef.current.contains(event.target as Node)) {
+        setShowPlusMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   // Generate workflow ID based on session ID (consistent across extractions)
   const getWorkflowIdForSession = useCallback(() => {
@@ -312,24 +337,35 @@ export default function Screen1Consultant() {
             </div>
           </div>
         ) : (
-          messages.map((message, index) => (
-            <div
-              key={index}
-              className={`flex ${
-                message.sender === 'user' ? 'justify-end' : 'justify-start'
-              }`}
-            >
+          <>
+            {messages.map((message, index) => (
               <div
-                className={`max-w-2xl rounded-lg px-4 py-2 ${
-                  message.sender === 'user'
-                    ? 'bg-gray-lighter text-gray-dark'
-                    : 'bg-gray-light text-gray-dark'
+                key={index}
+                className={`flex ${
+                  message.sender === 'user' ? 'justify-end' : 'justify-start'
                 }`}
               >
-                <p className="text-sm">{message.text}</p>
+                <div
+                  className={`max-w-2xl rounded-lg px-4 py-2 ${
+                    message.sender === 'user'
+                      ? 'bg-gray-lighter text-gray-dark'
+                      : 'bg-gray-light text-gray-dark'
+                  }`}
+                >
+                  <p className="text-sm">{message.text}</p>
+                </div>
               </div>
-            </div>
-          ))
+            ))}
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className="flex gap-1 px-4 py-2">
+                  <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                  <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                  <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                </div>
+              </div>
+            )}
+          </>
         )}
         <div ref={messagesEndRef} />
       </div>
@@ -337,9 +373,61 @@ export default function Screen1Consultant() {
       {/* Input Area */}
       <div className="p-6 border-t border-gray-lighter">
         <div className="flex items-center gap-2">
-          <button className="p-2 hover:bg-gray-lighter rounded-md">
-            <Plus className="h-5 w-5 text-gray-darker" />
-          </button>
+          {/* Plus Button */}
+          <div className="relative" ref={plusMenuRef}>
+            <button
+              onClick={() => setShowPlusMenu(!showPlusMenu)}
+              className="p-2 hover:bg-gray-lighter rounded-md transition-colors"
+            >
+              <Plus className="h-5 w-5 text-gray-darker" />
+            </button>
+            {showPlusMenu && (
+              <div className="absolute bottom-full left-0 mb-2 bg-white border border-gray-lighter rounded-md shadow-lg z-10 min-w-48">
+                <button
+                  onClick={() => {
+                    document.getElementById('file-upload')?.click()
+                    setShowPlusMenu(false)
+                  }}
+                  className="w-full px-4 py-2 text-left text-sm text-gray-dark hover:bg-gray-lighter flex items-center gap-2"
+                >
+                  <Upload className="h-4 w-4" />
+                  Upload File
+                </button>
+                <button
+                  onClick={async () => {
+                    setShowPlusMenu(false)
+                    try {
+                      await initiateGmailAuth()
+                      // Note: initiateGmailAuth redirects to Google, so code below won't run
+                      // The connection status will be updated when user returns via useEffect
+                    } catch (error) {
+                      console.error('Error initiating Gmail auth:', error)
+                      alert('Failed to connect Gmail. Please check your Gmail OAuth client ID configuration.')
+                    }
+                  }}
+                  disabled={gmailConnected}
+                  className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 border-t border-gray-lighter ${
+                    gmailConnected
+                      ? 'text-gray-darker cursor-not-allowed opacity-50'
+                      : 'text-gray-dark hover:bg-gray-lighter'
+                  }`}
+                >
+                  <Mail className="h-4 w-4" />
+                  {gmailConnected ? 'Gmail Connected' : 'Connect Gmail'}
+                </button>
+              </div>
+            )}
+          </div>
+          <input
+            id="file-upload"
+            type="file"
+            className="hidden"
+            multiple
+            onChange={(e) => {
+              // Handle file upload if needed in the future
+              console.log('Files selected:', e.target.files)
+            }}
+          />
           <div className="flex-1 relative">
             <Input
               value={inputValue}
