@@ -49,23 +49,47 @@ export default function Screen2OrgChart() {
     const width = svgRef.current.clientWidth || 800
 
     // Create user node with digital workers as children
+    // TEMPORARY: Add Sarah as test node to see if D3 calculates positions correctly with multiple children
+    const testTeam = [
+      ...team,
+      {
+        name: 'Sarah',
+        type: 'human' as const,
+        role: 'Flower Consultant',
+        status: 'inactive' as const,
+        assignedWorkflows: [],
+      } as NodeData,
+    ]
+    
     const userNode: NodeData = {
       name: user?.name || 'Chitra M.',
       type: 'human',
       role: user?.title || 'CEO, Treasure blossom',
       status: 'active',
-      children: team, // Digital workers report to user
+      children: testTeam, // Digital workers report to user (including test node Sarah)
     }
 
     // Create hierarchical data structure with user at root
     const rootData: any = userNode
     const root = d3.hierarchy(rootData)
     
-    // FIX 1: Use nodeSize with proper spacing
+    // DEBUG: Verify hierarchy structure
+    console.log('🔍 [Org Chart Debug] Hierarchy structure:')
+    console.log('  Root:', root.data.name, 'depth:', root.depth, 'children:', root.children?.length)
+    root.children?.forEach((child: any) => {
+      console.log(`    Child: ${child.data.name}, depth: ${child.depth}`)
+    })
+    
+    // Use D3 tree layout - let it calculate natural tree structure
     // nodeSize([verticalSpacing, horizontalSpacing])
-    const treeLayout = d3.tree<NodeData>().nodeSize([200, 200]) // 200px vertical, 200px horizontal spacing
+    const treeLayout = d3.tree<NodeData>().nodeSize([300, 200]) // 300px vertical, 200px horizontal spacing
 
     const treeData = treeLayout(root)
+    
+    console.log('🔍 [Org Chart Debug] After D3 layout:')
+    treeData.descendants().forEach((node: any) => {
+      console.log(`  Node: ${node.data.name}, x: ${node.x}, y: ${node.y}, depth: ${node.depth}, parent: ${node.parent?.data.name || 'none'}`)
+    })
 
     // FIX 2: Create a container group for zoom/pan
     const container = svg.append('g').attr('class', 'container')
@@ -81,19 +105,29 @@ export default function Screen2OrgChart() {
 
     // FIX 4: Center the camera - find the root node's position and center on it
     const rootNode = treeData.descendants()[0]
+    console.log('🔍 [Org Chart Debug] Root node:', rootNode)
+    console.log('🔍 [Org Chart Debug] All descendants:', treeData.descendants())
+    console.log('🔍 [Org Chart Debug] Root node data:', rootNode?.data)
+    console.log('🔍 [Org Chart Debug] Root node position - x:', rootNode?.x, 'y:', rootNode?.y)
+    
     const rootX = rootNode ? rootNode.y : 0 // Horizontal position of root
     const rootY = rootNode ? rootNode.x : 0 // Vertical position of root
+    console.log('🔍 [Org Chart Debug] Calculated rootX:', rootX, 'rootY:', rootY)
 
     // Center on the root node horizontally, and position it near the top
     const initialTransform = d3.zoomIdentity
       .translate(width / 2 - rootX, 80 - rootY)
       .scale(0.75)
+    console.log('🔍 [Org Chart Debug] Initial transform:', initialTransform.toString())
     svg.call(zoom.transform, initialTransform)
 
     // FIX 5: Use d3.linkVertical() for smooth Bezier curves
+    // D3 tree layout: x = horizontal, y = vertical
+    // linkVertical expects: .x() = horizontal, .y() = vertical
+    // So we use d.x for horizontal and d.y for vertical
     const linkGenerator = d3.linkVertical<any, any>()
-      .x((d: any) => d.y) // Horizontal position
-      .y((d: any) => d.x) // Vertical position
+      .x((d: any) => typeof d.x === 'number' ? d.x : 0) // Horizontal position (from D3 tree x)
+      .y((d: any) => typeof d.y === 'number' ? d.y : 0) // Vertical position (from D3 tree y)
 
     // Create links - render BEFORE nodes so they appear behind
     container
@@ -117,10 +151,16 @@ export default function Screen2OrgChart() {
       .enter()
       .append('g')
       .attr('class', 'node')
+      .each((d: any) => {
+        console.log('🎨 [Org Chart Debug] Rendering node:', d.data.name, 'at x:', d.x, 'y:', d.y, 'depth:', d.depth)
+      })
       .attr('transform', (d: any) => {
-        // FIX 6: Use d.y for X and d.x for Y directly (zoom handles centering)
-        // d.x = vertical position (Y), d.y = horizontal position (X)
-        return `translate(${d.y},${d.x})`
+        // D3 tree layout: x = horizontal, y = vertical
+        // SVG transform: translate(x, y) where x = horizontal, y = vertical
+        // So we use d.x for horizontal and d.y for vertical directly
+        const nodeX = typeof d.x === 'number' ? d.x : 0 // Horizontal position
+        const nodeY = typeof d.y === 'number' ? d.y : 0 // Vertical position
+        return `translate(${nodeX},${nodeY})`
       })
       .on('click', (_event, d: any) => {
         setSelectedNode(d.data)
