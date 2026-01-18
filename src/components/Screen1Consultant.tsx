@@ -14,9 +14,8 @@ export default function Screen1Consultant() {
   const [isLoading, setIsLoading] = useState(false)
   const [questionCount, setQuestionCount] = useState(0)
   const [sessionId, setSessionId] = useState<string | null>(null)
-  const [isExtracting, setIsExtracting] = useState(false)
+  const [workflowExtracted, setWorkflowExtracted] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const extractionTimeoutRef = useRef<number | null>(null)
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -29,18 +28,15 @@ export default function Screen1Consultant() {
     setSessionId(newSessionId)
   }, [])
 
-  // Debounced workflow extraction
-  const extractWorkflow = useCallback(async (conversationHistory: ConversationMessage[]) => {
-    if (extractionTimeoutRef.current) {
-      clearTimeout(extractionTimeoutRef.current)
-    }
-
-    extractionTimeoutRef.current = window.setTimeout(async () => {
-      setIsExtracting(true)
+  // Extract workflow only once at the end of conversation
+  const extractWorkflow = useCallback(async (conversationHistory: ConversationMessage[], isComplete: boolean) => {
+    // Only extract workflow if conversation is complete and we haven't extracted yet
+    if (isComplete && !workflowExtracted) {
       try {
         const workflow = await extractWorkflowFromConversation(conversationHistory)
         if (workflow) {
           addWorkflow(workflow)
+          setWorkflowExtracted(true)
           // Link conversation to workflow
           if (sessionId) {
             const session = conversations.find((c) => c.id === sessionId)
@@ -57,11 +53,9 @@ export default function Screen1Consultant() {
         }
       } catch (error) {
         console.error('Error extracting workflow:', error)
-      } finally {
-        setIsExtracting(false)
       }
-    }, 500) // 500ms debounce
-  }, [addWorkflow, sessionId, conversations, updateConversation])
+    }
+  }, [addWorkflow, sessionId, conversations, updateConversation, workflowExtracted])
 
   const handleSend = async () => {
     if (!inputValue.trim() || isLoading) return
@@ -111,8 +105,8 @@ export default function Screen1Consultant() {
         updateConversation(sessionId, updatedMessages)
       }
 
-      // Extract workflow in background
-      extractWorkflow(updatedMessages)
+      // Extract workflow only at the end of conversation
+      extractWorkflow(updatedMessages, isComplete)
     } catch (error) {
       console.error('Error getting consultant response:', error)
       const errorMessage: ConversationMessage = {
@@ -177,13 +171,6 @@ export default function Screen1Consultant() {
             </div>
           ))
         )}
-        {isExtracting && (
-          <div className="flex justify-start">
-            <div className="bg-gray-light rounded-lg px-4 py-2">
-              <p className="text-sm text-gray-darker">Extracting workflow...</p>
-            </div>
-          </div>
-        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -215,11 +202,6 @@ export default function Screen1Consultant() {
             <Send className="h-4 w-4" />
           </Button>
         </div>
-        {questionCount > 0 && (
-          <div className="mt-2 text-xs text-gray-darker text-center">
-            Questions asked: {questionCount}/{GEMINI_CONFIG.MAX_QUESTIONS}
-          </div>
-        )}
       </div>
     </div>
   )
