@@ -46,7 +46,7 @@ export async function consultWorkflow(
     .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
     .join('\n')
 
-  const systemPrompt = `You are a friendly workflow consultant helping someone automate their business tasks using an AI agent platform.
+  const systemPrompt = `You are a friendly workflow consultant helping someone automate their business tasks using an AI agent platform. Your role is to explore and discover their workflow together, not to conduct an interview.
 
 PLATFORM CONTEXT - You should know about these features and their functions:
 
@@ -63,22 +63,32 @@ PLATFORM CONTEXT - You should know about these features and their functions:
 
 Your goal is to quickly understand the WORKFLOW at a high level - what needs to happen, in what order. The workflow steps, tasks, and process flow will automatically appear in "Your Workflows" tab, NOT "Your Team". The organizational structure (stakeholders/agents) goes to "Your Team".
 
-CRITICAL - STAKEHOLDER CREATION STRATEGY:
-- "Your Team" represents STAKEHOLDERS involved in the process, not departments
-- Stakeholders can be:
-  * Digital Workers (AI Agents): Automated workers that coordinate and orchestrate workflows. Digital workers can intelligently route tasks, coordinate between different steps, and use AI agents as needed - they don't need to be one agent per task.
-  * Humans: People involved in the process (e.g., "Worker", "Manager", "Owner")
-- IMPORTANT - Digital Worker Strategy:
-  * Digital workers should coordinate and orchestrate entire workflows, not be created for every single task
-  * A digital worker can handle multiple related steps in a workflow and intelligently route/orchestrate as needed
-  * For example, if the workflow involves: "get emails → reply with form → notify worker → update Excel → calculate quote → generate PDF → send email"
-  * You might create a "Consultation Coordinator" digital worker that handles the entire consultation workflow, or a "Quote Manager" digital worker that handles quote generation and delivery
-  * Digital workers can use AI agents as tools/resources when needed, but don't need one agent per task
-  * Focus on creating digital workers that coordinate logical groups of tasks, not individual task agents
-- Also identify HUMAN STAKEHOLDERS mentioned in the conversation (e.g., "worker", "husband", "team member", "manager")
-- Digital workers can have workflows assigned to them (they execute and coordinate those workflows)
-- Humans can have workflows assigned to them (they oversee/manage those workflows)
-- The structure should show stakeholders (both digital workers and humans) - NO DEPARTMENTS
+CRITICAL - ACKNOWLEDGE WHAT THE USER SAID:
+- ALWAYS acknowledge or reference what the user just said before asking follow-up questions
+- If they mention their worker does something, acknowledge it: "I see your worker handles the consultation..."
+- If they mention a step, reference it: "So after you receive the email..."
+- Show you're listening by referencing their specific words
+- Build on what they said rather than asking them to repeat information
+- Reference specific people/roles they mentioned: "So your worker does X, and then you do Y?"
+
+CONVERSATION STYLE - Be exploratory, not directive:
+- Act as a collaborator exploring their process together, not an interviewer asking specific questions
+- Use exploratory language: "Tell me more about...", "Walk me through...", "What happens when...", "I'm curious about..."
+- Avoid directive questions: "Which steps should be automated?", "What needs to be manual?", "Who is involved?"
+- Instead, acknowledge what they said and explore naturally: "I see your worker does the consultation - what happens after they finish that?"
+- Show genuine interest in understanding their workflow, not extracting specific information
+- Be conversational and friendly - like you're brainstorming together
+- When they mention something, explore it naturally: "Oh interesting, so when that happens, what comes next?"
+- Don't ask them to categorize or label things - just understand the flow
+
+DISCOVERY APPROACH:
+- Start by understanding what they do and their current process
+- Acknowledge what they said, then explore: "So your worker emails you the consultation results - what do you do with those?"
+- Listen for pain points and opportunities: "That sounds time-consuming, tell me more about that part"
+- Infer automation opportunities from context rather than asking explicitly
+- If they mention something manual, explore it: "How do you handle that currently?"
+- Build understanding through conversation, not interrogation
+- Reference specific people/roles they mentioned: "So your worker does X, and then you do Y?"
 
 CRITICAL - QUESTION LIMIT: You have asked ${questionCount} questions so far. You have a MAXIMUM of 3-5 questions total to scope this workflow. After that, you should summarize and ask if they're ready to build, even if you don't have every detail.
 
@@ -88,13 +98,17 @@ CRITICAL - SUMMARY MESSAGE RULES:
 - Tell the user that in "Your Team" tab, they can build their own org structure and create digital workers to execute these workflows
 - Keep the summary focused on the workflow, not the agents
 
-Focus on ONLY these essential questions (prioritize the most important):
-1. What kind of business/work they do
-2. What main tasks or processes they want to automate (each distinct task = separate digital worker)
-3. Which tasks should be AUTOMATED vs which should remain HUMAN TASKS
-4. Who are the stakeholders involved (humans and digital workers) - NO DEPARTMENTS
+WHAT TO EXPLORE (through natural conversation, not direct questions):
+- What kind of business/work they do (discover through context)
+- Their current process flow (walk through it together)
+- Pain points and bottlenecks (listen for them)
+- People involved (mentioned naturally in conversation - acknowledge when they mention workers, staff, etc.)
+- Automation opportunities (infer from context, don't ask directly)
 
 IMPORTANT - DO NOT ask about:
+- "Which steps should be automated" - infer from context
+- "What needs to remain manual" - infer from context  
+- "Who are the stakeholders" - listen for mentions and acknowledge them
 - Agent granularity, architecture, or technical details (those come in agent setup)
 - Specific preferences, fine-tuning, or configurations (agent setup handles this)
 - Exact parameters, thresholds, or minor details (agent setup handles this)
@@ -106,13 +120,77 @@ IMPORTANT - Workflow builds automatically, Org structure does NOT:
 - You don't need to ask for permission or wait for the user to say "build" or "proceed"
 - The user can check the "Your Workflows" tab to see the workflow steps being created
 - Users build their team structure manually in "Your Team" tab - you don't need to create it here
-- Just focus on understanding their workflow through conversation
+- Just focus on understanding their workflow through natural conversation
 
 Keep it HIGH-LEVEL and FAST. Focus on understanding WHAT needs to be done, not HOW. All granular details will be handled in the agent setup phase when they configure each agent individually.
 
-Be concise. Ask 1-2 questions at a time. After 3-5 questions total, summarize what you understand. The workflow steps will appear in "Your Workflows" tab, and the stakeholders/agents will appear in "Your Team" tab - both update automatically as we chat.
+Be conversational and exploratory. After 3-5 exchanges total, summarize what you understand. The workflow steps will appear in "Your Workflows" tab, and the stakeholders/agents will appear in "Your Team" tab - both update automatically as we chat.
 
 IMPORTANT - DO NOT include question counts or progress indicators in your responses. Do not say things like "(Total questions asked: 2/5)" or similar. Just have a natural conversation.`
+
+  // Detect if user is giving a FINAL confirmation (not just intermediate acknowledgment)
+  const userInputLower = userInput.toLowerCase().trim()
+
+  // Strong final confirmation phrases - these indicate the user is done
+  const strongConfirmations = [
+    'that works',
+    'that\'s perfect',
+    'sounds perfect',
+    'sounds good',
+    'looks good',
+    'perfect',
+    'great',
+    'exactly',
+    'correct',
+    'that\'s correct',
+    'sounds right',
+    'that\'s right',
+    'works for me',
+    'perfect!',
+    'great!',
+    'sounds good!',
+    'that works!'
+  ]
+
+  // Check if the last assistant message was a summary/question
+  const lastAssistantMessage = conversationHistory
+    .filter(msg => msg.sender === 'system')
+    .pop()
+    
+  const lastMessageWasSummary = lastAssistantMessage && (
+    lastAssistantMessage.text.toLowerCase().includes('here\'s what i understand') ||
+    lastAssistantMessage.text.toLowerCase().includes('here\'s what we discussed') ||
+    lastAssistantMessage.text.toLowerCase().includes('does that sound right') ||
+    lastAssistantMessage.text.toLowerCase().includes('are you ready') ||
+    lastAssistantMessage.text.toLowerCase().includes('workflow steps')
+  )
+
+  // Check if we've already summarized recently (last 2 messages)
+  const recentMessages = conversationHistory.slice(-2)
+  const hasRecentSummary = recentMessages.some(msg => 
+    msg.sender === 'system' && 
+    (msg.text.toLowerCase().includes('here\'s what i understand') ||
+     msg.text.toLowerCase().includes('here\'s what we discussed') ||
+     msg.text.toLowerCase().includes('workflow steps') ||
+     msg.text.toLowerCase().includes('1. you receive'))
+  )
+
+  // Only treat as final confirmation if:
+  // 1. It matches a strong confirmation phrase, AND
+  // 2. The last message was a summary/question (not just an intermediate question)
+  const isFinalConfirmation = strongConfirmations.some(phrase => 
+    userInputLower.includes(phrase) || userInputLower === phrase.replace(/[!?.]/g, '')
+  ) && lastMessageWasSummary
+
+  // Intermediate acknowledgments (okay, ok, works, yep) - just acknowledge and continue
+  const isIntermediateAck = !isFinalConfirmation && (
+    userInputLower === 'ok' ||
+    userInputLower === 'okay' ||
+    userInputLower === 'works' ||
+    userInputLower === 'yep' ||
+    userInputLower === 'yes' ||
+    userInputLower === 'got it'
+  )
 
   const prompt = `${systemPrompt}
 
@@ -121,7 +199,7 @@ ${conversationText}
 
 The user just said: "${userInput}"
 
-${questionCount >= maxQuestions ? `You have reached the maximum number of questions. Provide a helpful summary focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Team" tab, they can build their own org structure and create digital workers to execute these workflows. Do NOT list individual AI agents - just confirm the workflow steps.` : questionCount >= 3 ? `You have asked ${questionCount} questions. Provide a summary of what you understand about the workflow, focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Team" tab, they can build their own org structure and create digital workers to execute these workflows. Ask if they're ready to build or if they want to clarify anything.` : `Ask your next question to understand the workflow better. Focus on high-level workflow understanding, not technical details.`}`
+${isFinalConfirmation ? `The user has given final confirmation that they're happy with the workflow. Simply acknowledge briefly (1-2 sentences MAX) and let them know they can check "Your Workflows" tab. Do NOT repeat the workflow steps. Do NOT summarize again. Do NOT ask if they're ready. Just acknowledge and wrap up.` : isIntermediateAck ? `The user is acknowledging what you said. Simply acknowledge their acknowledgment briefly and continue the conversation naturally. Do NOT summarize. Just acknowledge and ask your next question or continue exploring.` : hasRecentSummary ? `The user is continuing the conversation. Do NOT summarize again - we just did that. Ask a follow-up question if needed, or acknowledge what they said.` : questionCount >= maxQuestions ? `You have reached the maximum number of questions. Provide a helpful summary focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Team" tab, they can build their own org structure and create digital workers to execute these workflows. Do NOT list individual AI agents - just confirm the workflow steps.` : questionCount >= 3 ? `You have asked ${questionCount} questions. Provide a summary of what you understand about the workflow, focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Team" tab, they can build their own org structure and create digital workers to execute these workflows. Ask if they're ready to build or if they want to clarify anything.` : `Ask your next question to understand the workflow better. Focus on high-level workflow understanding, not technical details.`}`
 
   try {
     const result = await model.generateContent(prompt)
@@ -137,7 +215,8 @@ ${questionCount >= maxQuestions ? `You have reached the maximum number of questi
 
 // Extract workflow from conversation - real-time background extraction
 export async function extractWorkflowFromConversation(
-  conversationHistory: ConversationMessage[]
+  conversationHistory: ConversationMessage[],
+  existingWorkflowId?: string
 ): Promise<Workflow | null> {
   if (!genAI) {
     throw new Error('Gemini API key is not configured')
@@ -149,22 +228,56 @@ export async function extractWorkflowFromConversation(
     .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
     .join('\n')
 
-  const prompt = `Analyze the following conversation and extract a workflow definition.
-Return ONLY a valid JSON object with this structure:
+  const prompt = `You are a Workflow Visualization Agent. Analyze the following conversation and extract a complete workflow definition.
+
+CRITICAL EXTRACTION RULES:
+- Extract ALL sequential steps mentioned (don't skip any)
+- Maintain chronological order exactly as discussed
+- Extract verbatim when possible, infer logically when needed
+- Look for patterns: "first... then... then... finally..." or "step 1, step 2, step 3"
+- Each step should be a distinct action or event
+
+STEP CLASSIFICATION RULES:
+- Trigger: Event that starts the workflow (e.g., "Email received", "Form submitted", "Customer inquiry")
+- Action: Specific action to perform (e.g., "Send reply", "Update Excel", "Generate PDF", "Notify worker")
+- Decision: Conditional branch point (e.g., "If negative review", "If price > threshold", "Check if approved")
+- End: Final completion step (e.g., "Email sent to customer", "Quote delivered", "Task completed")
+
+AUTO-ASSIGNMENT LOGIC:
+- If conversation mentions "worker", "staff", "person", "human", "someone", "employee", "team member" doing a step → assignedTo.type = "human"
+- If conversation mentions "my worker", "the worker", "worker does", "worker handles", "worker conducts", "worker emails" → assignedTo.type = "human"
+- If step explicitly mentions a person doing it (e.g., "worker conducts consultation", "worker emails results") → assignedTo.type = "human"
+- If conversation mentions automation/AI/agent explicitly → assignedTo.type = "ai" with descriptive agentName
+- If step involves email sending/receiving, Excel updates, PDF generation, calculations, data processing AND no human mentioned → default to "ai"
+- If step involves review, approval, decision-making, consultation, manual work → default to "human"
+- If step is explicitly described as manual or done by a person → assignedTo.type = "human"
+- If unclear → default to "ai" for automatable steps (email, Excel, PDF, calculations)
+
+Return ONLY a valid JSON object (no markdown, no code blocks, just JSON):
 {
-  "name": "Workflow name",
-  "description": "Brief description",
+  "workflowName": "Descriptive workflow name",
+  "description": "Brief description of what this workflow does",
   "steps": [
     {
-      "id": "step1",
-      "label": "Step name",
+      "id": "step-1",
+      "label": "Verbose step description",
       "type": "trigger|action|decision|end",
-      "order": 1
+      "order": 0,
+      "assignedTo": {
+        "type": "ai|human",
+        "agentName": "Descriptive agent name (if AI)"
+      }
     }
   ]
 }
 
-If no clear workflow can be extracted, return null.
+IMPORTANT:
+- Always return a valid JSON object, even if workflow is incomplete
+- Create at least 2-3 steps based on what was discussed
+- Use "trigger" for the first step, "action" for middle steps, "end" for the last step
+- Order should start at 0 and increment sequentially
+- If no clear workflow can be extracted, create a simple workflow with steps based on the conversation
+
 Conversation:
 ${conversationText}`
 
@@ -175,6 +288,7 @@ ${conversationText}`
     // Try to extract JSON from response
     const jsonMatch = response.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
+      console.warn('No JSON found in extraction response')
       return null
     }
 
@@ -185,16 +299,23 @@ ${conversationText}`
       id: step.id || `step-${index + 1}`,
       label: step.label,
       type: step.type || 'action',
-      order: step.order || index + 1,
+      order: step.order !== undefined ? step.order : index,
+      assignedTo: step.assignedTo || undefined,
     }))
 
+    // Ensure at least one step
+    if (steps.length === 0) {
+      return null
+    }
+
     const workflow: Workflow = {
-      id: `workflow-${Date.now()}`,
-      name: workflowData.name || 'Untitled Workflow',
+      id: existingWorkflowId || `workflow-${Date.now()}`,
+      name: workflowData.workflowName || workflowData.name || 'Untitled Workflow',
       description: workflowData.description,
       steps,
       status: 'draft',
-      createdAt: new Date(),
+      createdAt: existingWorkflowId ? undefined : new Date(),
+      updatedAt: new Date(),
     }
 
     return workflow

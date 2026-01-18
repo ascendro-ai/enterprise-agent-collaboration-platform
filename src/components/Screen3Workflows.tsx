@@ -4,7 +4,6 @@ import { useWorkflows } from '../contexts/WorkflowContext'
 import { checkWorkflowReadiness } from '../services/workflowReadinessService'
 import WorkflowFlowchart from './WorkflowFlowchart'
 import RequirementsGatherer from './RequirementsGatherer'
-import SlideOver from './ui/SlideOver'
 import Button from './ui/Button'
 import Card from './ui/Card'
 
@@ -12,7 +11,7 @@ export default function Screen3Workflows() {
   const { workflows, activateWorkflow } = useWorkflows()
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
-  const [isRequirementsOpen, setIsRequirementsOpen] = useState(false)
+  const [isRequirementsMode, setIsRequirementsMode] = useState(false)
 
   const selectedWorkflow = selectedWorkflowId
     ? workflows.find((w) => w.id === selectedWorkflowId)
@@ -25,7 +24,12 @@ export default function Screen3Workflows() {
 
   const handleStepClick = (stepId: string) => {
     setSelectedStepId(stepId)
-    setIsRequirementsOpen(true)
+    setIsRequirementsMode(true)
+  }
+
+  const handleBackFromRequirements = () => {
+    setIsRequirementsMode(false)
+    setSelectedStepId(null)
   }
 
   const handleActivate = () => {
@@ -41,6 +45,20 @@ export default function Screen3Workflows() {
   }
 
   const selectedStep = selectedWorkflow?.steps.find((s) => s.id === selectedStepId)
+
+  // If in requirements mode, show full-page requirements gatherer
+  if (isRequirementsMode && selectedStep && selectedWorkflow) {
+    return (
+      <RequirementsGatherer
+        workflowId={selectedWorkflow.id}
+        step={selectedStep}
+        workflowName={selectedWorkflow.name}
+        stepIndex={selectedWorkflow.steps.findIndex((s) => s.id === selectedStepId) + 1}
+        onComplete={handleBackFromRequirements}
+        onBack={handleBackFromRequirements}
+      />
+    )
+  }
 
   return (
     <div className="flex h-screen bg-white">
@@ -142,21 +160,6 @@ export default function Screen3Workflows() {
           </>
         )}
       </div>
-
-      {/* Requirements Gatherer Slide-over */}
-      {selectedStep && (
-        <SlideOver
-          isOpen={isRequirementsOpen}
-          onClose={() => setIsRequirementsOpen(false)}
-          title={`Requirements: ${selectedStep.label}`}
-        >
-          <RequirementsGatherer
-            workflowId={selectedWorkflow!.id}
-            step={selectedStep}
-            onComplete={() => setIsRequirementsOpen(false)}
-          />
-        </SlideOver>
-      )}
     </div>
   )
 }

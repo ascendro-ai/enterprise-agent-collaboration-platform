@@ -18,7 +18,7 @@ interface TeamContextType {
 const TeamContext = createContext<TeamContextType | undefined>(undefined)
 
 const defaultDigitalWorker: NodeData = {
-  name: WORKFLOW_CONFIG.DEFAULT_DIGITAL_WORKER_NAME,
+  name: 'default', // Keep internal name as 'default' for logic, display name will be "Digi"
   type: 'ai',
   status: 'inactive',
   assignedWorkflows: [],

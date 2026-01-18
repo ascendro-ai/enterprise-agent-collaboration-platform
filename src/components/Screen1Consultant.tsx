@@ -6,6 +6,13 @@ import { GEMINI_CONFIG } from '../utils/constants'
 import type { ConversationMessage, ConversationSession } from '../types'
 import Input from './ui/Input'
 import Button from './ui/Button'
+import Card from './ui/Card'
+import {
+  NightlySecurityIcon,
+  SpoilageDetectionIcon,
+  FinancialAutopilotIcon,
+  SalesResponseIcon,
+} from './ui/ExampleIcons'
 
 export default function Screen1Consultant() {
   const { addWorkflow, addConversation, updateConversation, conversations } = useWorkflows()
@@ -14,48 +21,81 @@ export default function Screen1Consultant() {
   const [isLoading, setIsLoading] = useState(false)
   const [questionCount, setQuestionCount] = useState(0)
   const [sessionId, setSessionId] = useState<string | null>(null)
-  const [workflowExtracted, setWorkflowExtracted] = useState(false)
+  const [currentWorkflowId, setCurrentWorkflowId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const extractionTimeoutRef = useRef<number | null>(null)
 
   // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Generate workflow ID based on session ID (consistent across extractions)
+  const getWorkflowIdForSession = useCallback(() => {
+    if (!sessionId) return null
+    return `workflow-${sessionId}`
+  }, [sessionId])
+
   // Initialize session
   useEffect(() => {
     const newSessionId = `session-${Date.now()}`
     setSessionId(newSessionId)
-  }, [])
-
-  // Extract workflow only once at the end of conversation
-  const extractWorkflow = useCallback(async (conversationHistory: ConversationMessage[], isComplete: boolean) => {
-    // Only extract workflow if conversation is complete and we haven't extracted yet
-    if (isComplete && !workflowExtracted) {
-      try {
-        const workflow = await extractWorkflowFromConversation(conversationHistory)
-        if (workflow) {
-          addWorkflow(workflow)
-          setWorkflowExtracted(true)
-          // Link conversation to workflow
-          if (sessionId) {
-            const session = conversations.find((c) => c.id === sessionId)
-            if (session) {
-              updateConversation(sessionId, [
-                ...session.messages,
-                {
-                  sender: 'system',
-                  text: `Workflow "${workflow.name}" has been created and is available in "Your Workflows".`,
-                },
-              ])
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Error extracting workflow:', error)
+    setCurrentWorkflowId(null) // Reset workflow ID for new session
+    
+    // Cleanup timeout on unmount
+    return () => {
+      if (extractionTimeoutRef.current) {
+        clearTimeout(extractionTimeoutRef.current)
       }
     }
-  }, [addWorkflow, sessionId, conversations, updateConversation, workflowExtracted])
+  }, [])
+
+  // Extract workflow after each message (background extraction)
+  const extractWorkflow = useCallback(async (conversationHistory: ConversationMessage[]) => {
+    // Debounce extraction to avoid too many API calls
+    if (extractionTimeoutRef.current) {
+      clearTimeout(extractionTimeoutRef.current)
+    }
+
+    extractionTimeoutRef.current = window.setTimeout(async () => {
+      // Extract workflow if we have at least 2 messages (user + assistant)
+      if (conversationHistory.length >= 2) {
+        try {
+          // Use consistent workflow ID for this session
+          const workflowId = getWorkflowIdForSession()
+          const workflow = await extractWorkflowFromConversation(conversationHistory, workflowId || undefined)
+          
+          if (workflow) {
+            // Track this workflow ID for future updates
+            if (!currentWorkflowId) {
+              setCurrentWorkflowId(workflow.id)
+            }
+            
+            // Update the workflow (this will update if exists, add if new)
+            addWorkflow(workflow)
+            
+            // Link conversation to workflow (only once)
+            if (sessionId && !currentWorkflowId) {
+              const session = conversations.find((c) => c.id === sessionId)
+              if (session && !session.workflowId) {
+                // Update session with workflow ID
+                updateConversation(sessionId, [
+                  ...session.messages,
+                  {
+                    sender: 'system',
+                    text: `Workflow "${workflow.name}" has been created and is available in "Your Workflows".`,
+                  },
+                ])
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error extracting workflow:', error)
+          // Don't show error to user - background extraction should be silent
+        }
+      }
+    }, 500) // 500ms debounce
+  }, [addWorkflow, sessionId, conversations, updateConversation, getWorkflowIdForSession, currentWorkflowId])
 
   const handleSend = async () => {
     if (!inputValue.trim() || isLoading) return
@@ -105,8 +145,8 @@ export default function Screen1Consultant() {
         updateConversation(sessionId, updatedMessages)
       }
 
-      // Extract workflow only at the end of conversation
-      extractWorkflow(updatedMessages, isComplete)
+      // Extract workflow in background after each message exchange
+      extractWorkflow(updatedMessages)
     } catch (error) {
       console.error('Error getting consultant response:', error)
       const errorMessage: ConversationMessage = {
@@ -127,6 +167,96 @@ export default function Screen1Consultant() {
     }
   }
 
+  const handleExampleClick = async (exampleText: string) => {
+    if (isLoading) return
+
+    const userMessage: ConversationMessage = {
+      sender: 'user',
+      text: exampleText,
+      timestamp: new Date(),
+    }
+
+    const newMessages = [...messages, userMessage]
+    setMessages(newMessages)
+    setInputValue('')
+    setIsLoading(true)
+
+    // Save conversation
+    if (sessionId) {
+      const session: ConversationSession = {
+        id: sessionId,
+        messages: newMessages,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      addConversation(session)
+    }
+
+    try {
+      // Get consultant response
+      const { response, isComplete } = await consultWorkflow(newMessages, questionCount)
+
+      const systemMessage: ConversationMessage = {
+        sender: 'system',
+        text: response,
+        timestamp: new Date(),
+      }
+
+      const updatedMessages = [...newMessages, systemMessage]
+      setMessages(updatedMessages)
+
+      // Update question count
+      if (!isComplete) {
+        setQuestionCount((prev) => prev + 1)
+      }
+
+      // Update conversation
+      if (sessionId) {
+        updateConversation(sessionId, updatedMessages)
+      }
+
+      // Extract workflow in background after each message exchange
+      extractWorkflow(updatedMessages)
+    } catch (error) {
+      console.error('Error getting consultant response:', error)
+      const errorMessage: ConversationMessage = {
+        sender: 'system',
+        text: 'Sorry, I encountered an error. Please try again.',
+        timestamp: new Date(),
+      }
+      setMessages([...newMessages, errorMessage])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const exampleWorkflows = [
+    {
+      title: 'Nightly Security Check',
+      description: 'Verify store locks and van security via connected sensors or staff logs.',
+      icon: NightlySecurityIcon,
+      prompt: 'I need to automate nightly security checks for my store and van using connected sensors or staff logs.',
+    },
+    {
+      title: 'Spoilage Detection',
+      description: 'Identify potential spoilage via camera feed to reduce waste.',
+      icon: SpoilageDetectionIcon,
+      prompt: 'I want to set up automated spoilage detection using camera feeds to reduce waste.',
+    },
+    {
+      title: 'Financial Autopilot',
+      description: 'Auto-categorize bank transactions (Rent, Travel) in QuickBooks.',
+      icon: FinancialAutopilotIcon,
+      prompt: 'I need to automatically categorize bank transactions like rent and travel expenses in QuickBooks.',
+    },
+    {
+      title: 'Sales Response',
+      description: 'Automatically provide quotes and proposals for customer inquiries.',
+      icon: SalesResponseIcon,
+      prompt: 'I want to automate providing quotes and proposals for customer inquiries.',
+    },
+  ]
+
   return (
     <div className="flex flex-col h-screen bg-white">
       {/* Header */}
@@ -143,12 +273,42 @@ export default function Screen1Consultant() {
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {messages.length === 0 ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center">
-              <p className="text-gray-darker text-lg mb-2">Start a conversation</p>
-              <p className="text-gray-darker text-sm">
-                Ask me about the workflow you want to create
+          <div className="flex flex-col items-center justify-center h-full max-w-4xl mx-auto">
+            {/* Header */}
+            <div className="text-center mb-8">
+              <h2 className="text-3xl font-bold text-gray-dark mb-3">
+                What can I do for you?
+              </h2>
+              <p className="text-base text-gray-darker">
+                Describe your daily routine, pain points, or the specific workflow you want to automate.
               </p>
+            </div>
+
+            {/* Example Cards Grid */}
+            <div className="grid grid-cols-2 gap-4 w-full">
+              {exampleWorkflows.map((example, index) => {
+                const Icon = example.icon
+                return (
+                  <Card
+                    key={index}
+                    variant="outlined"
+                    className="p-5 cursor-pointer hover:bg-gray-light transition-colors"
+                    onClick={() => handleExampleClick(example.prompt)}
+                  >
+                    <div className="flex items-start gap-4">
+                      <Icon />
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-gray-dark mb-1">
+                          {example.title}
+                        </h3>
+                        <p className="text-sm text-gray-darker">
+                          {example.description}
+                        </p>
+                      </div>
+                    </div>
+                  </Card>
+                )
+              })}
             </div>
           </div>
         ) : (
