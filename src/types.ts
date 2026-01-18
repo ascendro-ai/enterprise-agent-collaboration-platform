@@ -112,6 +112,8 @@ export interface ReviewItem {
     payload: unknown
   }
   timestamp: Date
+  chatHistory?: Array<{ sender: 'user' | 'agent'; text: string; timestamp: Date }>
+  needsGuidance?: boolean // Flag to indicate if agent is requesting guidance
 }
 
 export interface CompletedItem {

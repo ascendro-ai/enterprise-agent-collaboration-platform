@@ -4,7 +4,7 @@ import type { GmailAuthState } from '../types'
 const CLIENT_ID = import.meta.env.VITE_GMAIL_CLIENT_ID || ''
 const CLIENT_SECRET = import.meta.env.VITE_GMAIL_CLIENT_SECRET || ''
 const REDIRECT_URI = window.location.origin + '/auth/gmail/callback'
-const SCOPES = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send'
+const SCOPES = 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.modify'
 
 // Generate code verifier for PKCE
 function generateCodeVerifier(): string {

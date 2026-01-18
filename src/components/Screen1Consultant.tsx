@@ -408,7 +408,7 @@ export default function Screen1Consultant() {
                   disabled={gmailConnected}
                   className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 border-t border-gray-lighter ${
                     gmailConnected
-                      ? 'text-gray-darker cursor-not-allowed opacity-50'
+                      ? 'text-green-600 cursor-not-allowed'
                       : 'text-gray-dark hover:bg-gray-lighter'
                   }`}
                 >

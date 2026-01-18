@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Activity Logs Viewer</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      padding: 20px;
+      background: #f5f5f5;
+      margin: 0;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      border-bottom: 2px solid #333;
+      padding-bottom: 10px;
+    }
+    .log-entry {
+      border: 1px solid #ddd;
+      margin: 10px 0;
+      padding: 15px;
+      border-radius: 4px;
+      background: #fafafa;
+    }
+    .log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .log-type {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-weight: bold;
+      font-size: 12px;
+    }
+    .type-digital_worker_activation { background: #DBEAFE; color: #1E40AF; }
+    .type-agent_building_start { background: #FEF3C7; color: #92400E; }
+    .type-agent_building_complete { background: #D1FAE5; color: #065F46; }
+    .type-workflow_execution_start { background: #E9D5FF; color: #6B21A8; }
+    .type-workflow_step_execution { background: #E0E7FF; color: #3730A3; }
+    .type-workflow_step_complete { background: #CCFBF1; color: #134E4A; }
+    .type-workflow_complete { background: #D1FAE5; color: #065F46; }
+    .type-agent_assignment { background: #FCE7F3; color: #831843; }
+    .type-error { background: #FEE2E2; color: #991B1B; }
+    .type-blocker { background: #FED7AA; color: #92400E; }
+    .log-details {
+      font-size: 13px;
+      color: #666;
+      margin-top: 8px;
+    }
+    .log-data {
+      background: #f0f0f0;
+      padding: 10px;
+      border-radius: 4px;
+      margin-top: 8px;
+      font-size: 12px;
+      overflow-x: auto;
+    }
+    .stats {
+      background: #f0f0f0;
+      padding: 15px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+    }
+    .stats h2 {
+      margin-top: 0;
+      font-size: 16px;
+    }
+    button {
+      padding: 8px 16px;
+      background: #3B82F6;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 10px;
+    }
+    button:hover {
+      background: #2563EB;
+    }
+    .empty {
+      text-align: center;
+      padding: 40px;
+      color: #999;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📋 Digital Worker Activity Logs</h1>
+    <div class="stats" id="stats"></div>
+    <div style="margin-bottom: 20px;">
+      <button onclick="exportLogs()">Export JSON</button>
+      <button onclick="clearLogs()">Clear Logs</button>
+      <button onclick="location.reload()">Refresh</button>
+    </div>
+    <div id="logs"></div>
+  </div>
+
+  <script>
+    function getLogs() {
+      try {
+        const stored = localStorage.getItem('digital_worker_activity_logs')
+        return stored ? JSON.parse(stored) : []
+      } catch (error) {
+        console.error('Error reading logs:', error)
+        return []
+      }
+    }
+
+    function formatTimestamp(timestamp) {
+      return new Date(timestamp).toLocaleString()
+    }
+
+    function getTypeClass(type) {
+      return `type-${type}`
+    }
+
+    function formatType(type) {
+      return type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+    }
+
+    function displayLogs() {
+      const logs = getLogs()
+      const container = document.getElementById('logs')
+      const statsContainer = document.getElementById('stats')
+
+      if (logs.length === 0) {
+        container.innerHTML = '<div class="empty">No logs found</div>'
+        statsContainer.innerHTML = '<h2>Statistics</h2><p>No logs available</p>'
+        return
+      }
+
+      // Calculate statistics
+      const byType = {}
+      const byWorker = {}
+      logs.forEach(log => {
+        byType[log.type] = (byType[log.type] || 0) + 1
+        byWorker[log.digitalWorkerName] = (byWorker[log.digitalWorkerName] || 0) + 1
+      })
+
+      // Display statistics
+      statsContainer.innerHTML = `
+        <h2>Statistics</h2>
+        <p><strong>Total Logs:</strong> ${logs.length}</p>
+        <p><strong>By Type:</strong> ${Object.entries(byType).map(([type, count]) => `${formatType(type)}: ${count}`).join(', ')}</p>
+        <p><strong>By Digital Worker:</strong> ${Object.entries(byWorker).map(([worker, count]) => `${worker}: ${count}`).join(', ')}</p>
+      `
+
+      // Display logs (newest first)
+      const sortedLogs = [...logs].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      
+      container.innerHTML = sortedLogs.map(log => `
+        <div class="log-entry">
+          <div class="log-header">
+            <span class="log-type ${getTypeClass(log.type)}">${formatType(log.type)}</span>
+            <span style="color: #999; font-size: 12px;">${formatTimestamp(log.timestamp)}</span>
+          </div>
+          <div class="log-details">
+            <div><strong>Digital Worker:</strong> ${log.digitalWorkerName}</div>
+            ${log.workflowId ? `<div><strong>Workflow ID:</strong> ${log.workflowId}</div>` : ''}
+            ${log.stepId ? `<div><strong>Step ID:</strong> ${log.stepId}</div>` : ''}
+            ${log.metadata?.duration ? `<div><strong>Duration:</strong> ${log.metadata.duration}ms</div>` : ''}
+            ${log.metadata?.error ? `<div style="color: red;"><strong>Error:</strong> ${log.metadata.error}</div>` : ''}
+            ${log.metadata?.agentsCreated ? `<div><strong>Agents Created:</strong> ${log.metadata.agentsCreated.length}</div>` : ''}
+          </div>
+          ${Object.keys(log.data).length > 0 ? `
+            <div class="log-data">
+              <strong>Data:</strong><br>
+              <pre>${JSON.stringify(log.data, null, 2)}</pre>
+            </div>
+          ` : ''}
+        </div>
+      `).join('')
+    }
+
+    function exportLogs() {
+      const logs = getLogs()
+      const dataStr = JSON.stringify(logs, null, 2)
+      const dataBlob = new Blob([dataStr], { type: 'application/json' })
+      const url = URL.createObjectURL(dataBlob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `digital-worker-logs-${new Date().toISOString().split('T')[0]}.json`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    }
+
+    function clearLogs() {
+      if (confirm('Are you sure you want to clear all logs? This cannot be undone.')) {
+        localStorage.removeItem('digital_worker_activity_logs')
+        displayLogs()
+      }
+    }
+
+    // Display logs on load
+    displayLogs()
+  </script>
+</body>
+</html>

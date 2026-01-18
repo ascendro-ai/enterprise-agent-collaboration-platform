@@ -1,17 +1,21 @@
-import { useState, useEffect } from 'react'
-import { Eye, AlertCircle, Clock, CheckCircle, XCircle } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Eye, AlertCircle, Clock, CheckCircle, XCircle, MessageSquare, Send } from 'lucide-react'
 import { CONTROL_ROOM_EVENT } from '../utils/constants'
 import { useTeam } from '../contexts/TeamContext'
-import { approveReviewItem, rejectReviewItem } from '../services/workflowExecutionService'
+import { approveReviewItem, rejectReviewItem, provideGuidanceToReviewItem } from '../services/workflowExecutionService'
 import type { ControlRoomUpdate, ReviewItem, CompletedItem, NodeData } from '../types'
 import Card from './ui/Card'
 import Button from './ui/Button'
+import Input from './ui/Input'
 
 export default function Screen4ControlRoom() {
   const { team } = useTeam()
   const [watchingItems, setWatchingItems] = useState<Array<{ id: string; name: string; workflow: string }>>([])
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([])
   const [completedItems, setCompletedItems] = useState<CompletedItem[]>([])
+  const [expandedChatId, setExpandedChatId] = useState<string | null>(null)
+  const [chatMessages, setChatMessages] = useState<Record<string, string>>({})
+  const chatEndRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   // Sync active workers from team state
   useEffect(() => {
@@ -68,13 +72,22 @@ export default function Screen4ControlRoom() {
         case 'review_needed':
           // Add to needs review
           setReviewItems((prev) => {
+            const action = update.data.action || { type: 'unknown', payload: {} }
+            const needsGuidance = action.type === 'guidance_requested' || 
+                                 (typeof action.payload === 'object' && 
+                                  action.payload !== null && 
+                                  'needsGuidance' in action.payload &&
+                                  (action.payload as any).needsGuidance === true)
+            
             const newItem: ReviewItem = {
               id: `review-${Date.now()}`,
               workflowId: update.data.workflowId,
               stepId: update.data.stepId || '',
               digitalWorkerName: update.data.digitalWorkerName || 'default',
-              action: update.data.action || { type: 'unknown', payload: {} },
+              action,
               timestamp: update.data.timestamp,
+              needsGuidance,
+              chatHistory: [],
             }
             return [...prev, newItem]
           })
@@ -108,14 +121,69 @@ export default function Screen4ControlRoom() {
   }, [])
 
   const handleApprove = (item: ReviewItem) => {
-    approveReviewItem(item)
+    // Include chat history if available
+    const itemWithChat = {
+      ...item,
+      chatHistory: item.chatHistory || [],
+    }
+    approveReviewItem(itemWithChat)
     setReviewItems((prev) => prev.filter((i) => i.id !== item.id))
+    setExpandedChatId(null)
+    setChatMessages((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
   }
 
   const handleReject = (item: ReviewItem) => {
     rejectReviewItem(item)
     setReviewItems((prev) => prev.filter((i) => i.id !== item.id))
+    setExpandedChatId(null)
+    setChatMessages((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
   }
+
+  const handleSendGuidance = (item: ReviewItem) => {
+    const message = chatMessages[item.id]?.trim()
+    if (!message) return
+
+    // Add user message to chat history
+    const updatedItem: ReviewItem = {
+      ...item,
+      chatHistory: [
+        ...(item.chatHistory || []),
+        {
+          sender: 'user',
+          text: message,
+          timestamp: new Date(),
+        },
+      ],
+    }
+
+    // Update review item with new chat history
+    setReviewItems((prev) => prev.map((i) => (i.id === item.id ? updatedItem : i)))
+
+    // Clear input
+    setChatMessages((prev) => {
+      const updated = { ...prev }
+      updated[item.id] = ''
+      return updated
+    })
+
+    // Provide guidance to the agent
+    provideGuidanceToReviewItem(item.id, message)
+  }
+
+  // Scroll chat to bottom when messages change
+  useEffect(() => {
+    if (expandedChatId && chatEndRefs.current[expandedChatId]) {
+      chatEndRefs.current[expandedChatId]?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [expandedChatId, reviewItems])
 
   return (
     <div className="flex flex-col h-screen bg-white">
@@ -223,43 +291,163 @@ export default function Screen4ControlRoom() {
                   </p>
                 </Card>
               ) : (
-                reviewItems.map((item) => (
-                  <Card key={item.id} variant="elevated" className="p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs font-medium text-gray-darker">
-                        {item.digitalWorkerName}
-                      </span>
-                    </div>
-                    <div className="text-sm text-gray-dark mb-3">
-                      {item.action.type === 'approval_required' &&
-                      typeof item.action.payload === 'object' &&
-                      item.action.payload !== null &&
-                      'message' in item.action.payload
-                        ? String(item.action.payload.message)
-                        : 'Action requires approval'}
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        onClick={() => handleApprove(item)}
-                        className="flex-1"
-                      >
-                        <CheckCircle className="h-4 w-4 mr-1" />
-                        Approve
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => handleReject(item)}
-                        className="flex-1"
-                      >
-                        <XCircle className="h-4 w-4 mr-1" />
-                        Reject
-                      </Button>
-                    </div>
-                  </Card>
-                ))
+                reviewItems.map((item) => {
+                  const isError = item.action.type === 'error'
+                  const payload = item.action.payload as any
+                  const errorMessage = payload?.message || payload?.error || 'An error occurred'
+                  const isChatExpanded = expandedChatId === item.id
+                  const chatHistory = item.chatHistory || []
+                  
+                  return (
+                    <Card 
+                      key={item.id} 
+                      variant="elevated" 
+                      className={`p-4 ${isError ? 'border-l-4' : ''}`}
+                      style={isError ? { borderLeftColor: '#EF4444' } : {}}
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-xs font-medium text-gray-darker">
+                          {item.digitalWorkerName}
+                        </span>
+                        {isError && (
+                          <span className="px-2 py-0.5 bg-red-100 text-red-800 rounded text-xs font-semibold">
+                            ERROR
+                          </span>
+                        )}
+                        {item.needsGuidance && (
+                          <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs font-semibold">
+                            NEEDS GUIDANCE
+                          </span>
+                        )}
+                      </div>
+                      <div className={`text-sm mb-3 ${isError ? 'text-red-700' : 'text-gray-dark'}`}>
+                        {isError ? (
+                          <>
+                            <div className="font-semibold mb-1">Error in step: {payload?.step || 'Unknown'}</div>
+                            <div className="text-xs">{errorMessage}</div>
+                          </>
+                        ) : (
+                          item.action.type === 'approval_required' &&
+                          typeof item.action.payload === 'object' &&
+                          item.action.payload !== null &&
+                          'message' in item.action.payload
+                            ? String(item.action.payload.message)
+                            : item.needsGuidance
+                            ? 'Agent needs guidance to proceed'
+                            : 'Action requires approval'
+                        )}
+                      </div>
+
+                      {/* Chat Interface */}
+                      {isChatExpanded && (
+                        <div className="mb-3 border-t border-gray-lighter pt-3">
+                          <div className="text-xs font-semibold text-gray-darker mb-2">Chat with Agent</div>
+                          <div className="max-h-48 overflow-y-auto mb-2 space-y-2 bg-gray-50 rounded p-2">
+                            {chatHistory.length === 0 ? (
+                              <div className="text-xs text-gray-darker italic">No messages yet...</div>
+                            ) : (
+                              chatHistory.map((msg, idx) => (
+                                <div
+                                  key={idx}
+                                  className={`text-xs p-2 rounded ${
+                                    msg.sender === 'user'
+                                      ? 'bg-blue-100 text-blue-900 ml-auto max-w-[80%]'
+                                      : 'bg-gray-200 text-gray-800 mr-auto max-w-[80%]'
+                                  }`}
+                                >
+                                  <div className="font-semibold mb-1">
+                                    {msg.sender === 'user' ? 'You' : item.digitalWorkerName}
+                                  </div>
+                                  <div>{msg.text}</div>
+                                </div>
+                              ))
+                            )}
+                            <div ref={(el) => (chatEndRefs.current[item.id] = el)} />
+                          </div>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={chatMessages[item.id] || ''}
+                              onChange={(e) =>
+                                setChatMessages((prev) => ({ ...prev, [item.id]: e.target.value }))
+                              }
+                              onKeyPress={(e) => {
+                                if (e.key === 'Enter') {
+                                  handleSendGuidance(item)
+                                }
+                              }}
+                              placeholder="Provide guidance..."
+                              className="flex-1 px-3 py-2 text-sm border border-gray-lighter rounded-md focus:ring-purple-500 focus:border-purple-500"
+                            />
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={() => handleSendGuidance(item)}
+                              disabled={!chatMessages[item.id]?.trim()}
+                            >
+                              <Send className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setExpandedChatId(isChatExpanded ? null : item.id)}
+                          className="flex-1"
+                        >
+                          <MessageSquare className="h-4 w-4 mr-1" />
+                          {isChatExpanded ? 'Hide Chat' : 'Chat'}
+                        </Button>
+                        {isError ? (
+                          <>
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={() => handleApprove(item)}
+                              className="flex-1"
+                            >
+                              <CheckCircle className="h-4 w-4 mr-1" />
+                              Retry
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => handleReject(item)}
+                              className="flex-1"
+                            >
+                              <XCircle className="h-4 w-4 mr-1" />
+                              Dismiss
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={() => handleApprove(item)}
+                              className="flex-1"
+                            >
+                              <CheckCircle className="h-4 w-4 mr-1" />
+                              Approve
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => handleReject(item)}
+                              className="flex-1"
+                            >
+                              <XCircle className="h-4 w-4 mr-1" />
+                              Reject
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </Card>
+                  )
+                })
               )}
             </div>
           </div>

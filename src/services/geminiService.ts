@@ -1,5 +1,9 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { GEMINI_CONFIG } from '../utils/constants'
+import {
+  logAgentBuildingStart,
+  logAgentBuildingComplete,
+} from './activityLogService'
 import type {
   Workflow,
   WorkflowStep,
@@ -569,11 +573,19 @@ Generate a conversational response to the user's last message. Be friendly, ackn
 
 // Intelligent agent grouping - LLM-based
 export async function buildAgentsFromWorkflowRequirements(
-  workflow: Workflow
+  workflow: Workflow,
+  digitalWorkerName?: string
 ): Promise<AgentConfiguration[]> {
   if (!genAI) {
     throw new Error('Gemini API key is not configured')
   }
+
+  const startTime = Date.now()
+  const workerName = digitalWorkerName || workflow.assignedTo?.stakeholderName || 'default'
+
+  // Log agent building start
+  logAgentBuildingStart(workflow.id, workerName, workflow.steps.length)
+  console.log(`🤖 [Agent Building] Starting to build agents for workflow "${workflow.name}" (${workflow.steps.length} steps) for digital worker "${workerName}"`)
 
   const model = getModel()
 
@@ -638,9 +650,20 @@ ${JSON.stringify(workflowInfo, null, 2)}`
       }
     })
 
+    const duration = Date.now() - startTime
+
+    // Log agent building complete
+    logAgentBuildingComplete(workflow.id, workerName, agents, duration)
+    console.log(`✅ [Agent Building] Successfully built ${agents.length} agents for workflow "${workflow.name}":`, agents.map(a => a.name).join(', '))
+    console.log(`⏱️ [Agent Building] Took ${duration}ms`)
+    console.log(`📋 [Agent Building] Agent details:`, agents)
+
     return agents
   } catch (error) {
     console.error('Error building agents:', error)
+    const duration = Date.now() - startTime
+    // Log error in metadata
+    logAgentBuildingComplete(workflow.id, workerName, [], duration)
     throw new Error('Failed to build agents from workflow requirements')
   }
 }

@@ -6,7 +6,13 @@ import { useWorkflows } from '../contexts/WorkflowContext'
 import { useApp } from '../contexts/AppContext'
 import { buildAgentsFromWorkflowRequirements } from '../services/geminiService'
 import { startWorkflowExecution } from '../services/workflowExecutionService'
+import {
+  logDigitalWorkerActivation,
+  logAgentAssignment,
+  logErrorOrBlocker,
+} from '../services/activityLogService'
 import { CONTROL_ROOM_EVENT } from '../utils/constants'
+import { storage } from '../utils/storage'
 import type { NodeData, ControlRoomUpdate } from '../types'
 import Button from './ui/Button'
 
@@ -21,7 +27,7 @@ function getInitials(name: string): string {
 
 export default function Screen2OrgChart() {
   const { team, toggleNodeStatus, assignWorkflowToNode, ensureDefaultDigitalWorker } = useTeam()
-  const { workflows } = useWorkflows()
+  const { workflows, activateWorkflow } = useWorkflows()
   const { user } = useApp()
   const svgRef = useRef<SVGSVGElement>(null)
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null)
@@ -254,18 +260,36 @@ export default function Screen2OrgChart() {
     const workflow = workflows.find((w) => w.id === selectedWorkflowId)
     if (!workflow) return
 
+    // Log agent assignment
+    logAgentAssignment(workflow.id, selectedNode.name, workflow.name)
+
     // Assign workflow to node
     assignWorkflowToNode(selectedNode.name, selectedWorkflowId)
 
     // Build agents if node is active
     if (selectedNode.status === 'active') {
       try {
-        await buildAgentsFromWorkflowRequirements(workflow)
-        // Start workflow execution
-        startWorkflowExecution(workflow.id)
+        await buildAgentsFromWorkflowRequirements(workflow, selectedNode.name)
+        
+        // Auto-activate workflow if it's in draft status
+        if (workflow.status === 'draft') {
+          activateWorkflow(workflow.id)
+        }
+        
+        // Start workflow execution (pass digital worker name)
+        startWorkflowExecution(workflow.id, selectedNode.name)
       } catch (error) {
-        console.error('Error building agents:', error)
-        alert('Failed to build agents. Please try again.')
+        console.error('Error building agents or starting workflow:', error)
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        logErrorOrBlocker(
+          workflow.id,
+          '',
+          workflow.name,
+          selectedNode.name,
+          `Failed to build agents or start workflow: ${errorMessage}`,
+          'error'
+        )
+        alert('Failed to build agents or start workflow. Please try again.')
       }
     }
 
@@ -284,6 +308,9 @@ export default function Screen2OrgChart() {
     
     // If activating, send Control Room event immediately
     if (newStatus === 'active') {
+      // Log digital worker activation
+      logDigitalWorkerActivation(nodeName, node.assignedWorkflows || [])
+
       // Send Control Room event for worker activation
       const event = new CustomEvent(CONTROL_ROOM_EVENT, {
         detail: {
@@ -298,12 +325,50 @@ export default function Screen2OrgChart() {
       })
       window.dispatchEvent(event)
       
-      // If activating and has assigned workflows, start execution
+      // If activating and has assigned workflows, build agents then start execution
       if (node.assignedWorkflows && node.assignedWorkflows.length > 0) {
-        node.assignedWorkflows.forEach((workflowId) => {
+        node.assignedWorkflows.forEach(async (workflowId) => {
           const workflow = workflows.find((w) => w.id === workflowId)
           if (workflow) {
-            startWorkflowExecution(workflowId)
+            try {
+              console.log(`🚀 [Digital Worker "${nodeName}"] Building agents for workflow "${workflow.name}"...`)
+              // Build agents first (this creates the team of agents to handle the workflow)
+              const agents = await buildAgentsFromWorkflowRequirements(workflow, nodeName)
+              console.log(`✅ [Digital Worker "${nodeName}"] Agents built successfully (${agents.length} agents), starting workflow execution...`)
+              
+              // Auto-activate workflow if it's in draft status
+              if (workflow.status === 'draft') {
+                console.log(`🔄 [Digital Worker "${nodeName}"] Auto-activating workflow "${workflow.name}"...`)
+                activateWorkflow(workflowId)
+                
+                // Manually save updated workflow to localStorage immediately (before useEffect runs)
+                const updatedWorkflow = workflows.find((w) => w.id === workflowId)
+                if (updatedWorkflow) {
+                  const allWorkflows = storage.getWorkflows()
+                  const updatedWorkflows = allWorkflows.map((w) => 
+                    w.id === workflowId ? { ...updatedWorkflow, status: 'active' as const } : w
+                  )
+                  storage.saveWorkflows(updatedWorkflows)
+                  console.log(`✅ [Digital Worker "${nodeName}"] Workflow activated and saved to localStorage, new status: active`)
+                }
+              }
+              
+              // Then start workflow execution (pass digital worker name)
+              console.log(`▶️ [Digital Worker "${nodeName}"] Calling startWorkflowExecution for "${workflow.name}"...`)
+              startWorkflowExecution(workflowId, nodeName)
+            } catch (error) {
+              console.error(`❌ [Digital Worker "${nodeName}"] Error building agents or starting workflow:`, error)
+              const errorMessage = error instanceof Error ? error.message : String(error)
+              // Log the error so it shows up in logs and Control Room
+              logErrorOrBlocker(
+                workflowId,
+                '',
+                workflow.name,
+                nodeName,
+                `Failed to build agents or start workflow: ${errorMessage}`,
+                'error'
+              )
+            }
           }
         })
       }

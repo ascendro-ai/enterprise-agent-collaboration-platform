@@ -386,7 +386,7 @@ export default function RequirementsGatherer({
                       disabled={gmailConnected}
                       className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 border-t border-gray-lighter ${
                         gmailConnected
-                          ? 'text-gray-400 cursor-not-allowed'
+                          ? 'text-green-600 cursor-not-allowed'
                           : 'text-gray-dark hover:bg-gray-lighter'
                       }`}
                     >
