@@ -4,6 +4,8 @@ export interface Workflow {
   name: string
   description?: string
   steps: WorkflowStep[]
+  conversation?: ConversationMessage[]  // Chat history persisted with workflow
+  hasGeneratedSteps?: boolean           // Track if steps have been generated
   assignedTo?: {
     stakeholderName: string
     stakeholderType: 'ai' | 'human'
@@ -156,7 +158,7 @@ export interface GmailAuthState {
 }
 
 // App State Types
-export type TabType = 'create-task' | 'workflows' | 'team' | 'control-room'
+export type TabType = 'create-workflow' | 'team' | 'control-room'
 
 export interface AppState {
   activeTab: TabType

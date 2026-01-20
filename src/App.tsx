@@ -3,9 +3,8 @@ import { AppProvider, useApp } from './contexts/AppContext'
 import { WorkflowProvider } from './contexts/WorkflowContext'
 import { TeamProvider, useTeam } from './contexts/TeamContext'
 import Sidebar from './components/Sidebar'
-import Screen1Consultant from './components/Screen1Consultant'
+import CreateWorkflow from './components/CreateWorkflow'
 import Screen2OrgChart from './components/Screen2OrgChart'
-import Screen3Workflows from './components/Screen3Workflows'
 import Screen4ControlRoom from './components/Screen4ControlRoom'
 import OrganizationSetup from './components/OrganizationSetup'
 import { handleGmailCallback } from './services/gmailService'
@@ -39,7 +38,7 @@ function AppContent() {
 
   // Check if organization setup is needed
   useEffect(() => {
-    if (activeTab === 'create-task' && !isOrganizationSetup) {
+    if (activeTab === 'create-workflow' && !isOrganizationSetup) {
       setShowOrgSetup(true)
     } else {
       setShowOrgSetup(false)
@@ -48,21 +47,19 @@ function AppContent() {
 
   const handleOrgSetupComplete = () => {
     setShowOrgSetup(false)
-    // User can now proceed to Create a Task
+    // User can now proceed to Create a Workflow
   }
 
   const renderScreen = () => {
     switch (activeTab) {
-      case 'create-task':
-        return <Screen1Consultant />
-      case 'workflows':
-        return <Screen3Workflows />
+      case 'create-workflow':
+        return <CreateWorkflow />
       case 'team':
         return <Screen2OrgChart />
       case 'control-room':
         return <Screen4ControlRoom />
       default:
-        return <Screen1Consultant />
+        return <CreateWorkflow />
     }
   }
 

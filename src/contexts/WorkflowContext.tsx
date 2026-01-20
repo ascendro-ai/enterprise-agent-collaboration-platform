@@ -9,6 +9,10 @@ interface WorkflowContextType {
   updateWorkflow: (id: string, updates: Partial<Workflow>) => void
   deleteWorkflow: (id: string) => void
   activateWorkflow: (id: string) => void
+  createDraftWorkflow: (initialMessage?: string) => Workflow
+  updateWorkflowConversation: (id: string, messages: ConversationMessage[]) => void
+  autoNameWorkflow: (id: string, firstMessage: string) => void
+  toggleWorkflowStatus: (id: string) => void
   addConversation: (session: ConversationSession) => void
   updateConversation: (id: string, messages: ConversationMessage[]) => void
   getConversationByWorkflowId: (workflowId: string) => ConversationSession | undefined
@@ -63,6 +67,52 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
   const activateWorkflow = useCallback((id: string) => {
     setWorkflows((prev) =>
       prev.map((w) => (w.id === id ? { ...w, status: 'active' as const, updatedAt: new Date() } : w))
+    )
+  }, [])
+
+  // Create a new draft workflow
+  const createDraftWorkflow = useCallback((initialMessage?: string): Workflow => {
+    const newWorkflow: Workflow = {
+      id: `workflow-${Date.now()}`,
+      name: initialMessage ? initialMessage.slice(0, 50) : 'New Workflow',
+      description: '',
+      steps: [],
+      conversation: [],
+      hasGeneratedSteps: false,
+      status: 'draft',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }
+    setWorkflows((prev) => [...prev, newWorkflow])
+    return newWorkflow
+  }, [])
+
+  // Update conversation for a workflow
+  const updateWorkflowConversation = useCallback((id: string, messages: ConversationMessage[]) => {
+    setWorkflows((prev) =>
+      prev.map((w) => (w.id === id ? { ...w, conversation: messages, updatedAt: new Date() } : w))
+    )
+  }, [])
+
+  // Auto-name workflow from first message
+  const autoNameWorkflow = useCallback((id: string, firstMessage: string) => {
+    // Generate a short name from the first message
+    const name = firstMessage.length > 50 ? firstMessage.slice(0, 50) + '...' : firstMessage
+    setWorkflows((prev) =>
+      prev.map((w) => (w.id === id ? { ...w, name, updatedAt: new Date() } : w))
+    )
+  }, [])
+
+  // Toggle workflow status between active and draft
+  const toggleWorkflowStatus = useCallback((id: string) => {
+    setWorkflows((prev) =>
+      prev.map((w) => {
+        if (w.id === id) {
+          const newStatus = w.status === 'active' ? 'draft' : 'active'
+          return { ...w, status: newStatus as 'draft' | 'active', updatedAt: new Date() }
+        }
+        return w
+      })
     )
   }, [])
 
@@ -143,6 +193,10 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         updateWorkflow,
         deleteWorkflow,
         activateWorkflow,
+        createDraftWorkflow,
+        updateWorkflowConversation,
+        autoNameWorkflow,
+        toggleWorkflowStatus,
         addConversation,
         updateConversation,
         getConversationByWorkflowId,

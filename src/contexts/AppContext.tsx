@@ -20,7 +20,7 @@ const defaultUser = {
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [activeTab, setActiveTabState] = useState<TabType>('create-task')
+  const [activeTab, setActiveTabState] = useState<TabType>('create-workflow')
   const [user] = useState(defaultUser)
 
   // Load app state from localStorage on mount

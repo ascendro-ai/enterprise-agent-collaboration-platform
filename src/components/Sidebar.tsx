@@ -1,4 +1,4 @@
-import { FileText, Workflow, Users, Monitor } from 'lucide-react'
+import { Workflow, Users, Monitor } from 'lucide-react'
 import { useApp } from '../contexts/AppContext'
 import { cn } from './utils/cn'
 import type { TabType } from '../types'
@@ -12,9 +12,8 @@ interface SidebarProps {
   }
 }
 
-const tabs: Array<{ id: TabType; label: string; icon: typeof FileText }> = [
-  { id: 'create-task', label: 'Create a Task', icon: FileText },
-  { id: 'workflows', label: 'Your Workflows', icon: Workflow },
+const tabs: Array<{ id: TabType; label: string; icon: typeof Workflow }> = [
+  { id: 'create-workflow', label: 'Create a Workflow', icon: Workflow },
   { id: 'team', label: 'Your Team', icon: Users },
   { id: 'control-room', label: 'Control Room', icon: Monitor },
 ]
