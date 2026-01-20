@@ -79,6 +79,18 @@ export default function Screen4ControlRoom() {
                                   'needsGuidance' in action.payload &&
                                   (action.payload as any).needsGuidance === true)
             
+            // Add initial agent message if guidance is requested
+            const initialChatHistory = needsGuidance && action.type === 'guidance_requested' && 
+                                     typeof action.payload === 'object' && 
+                                     action.payload !== null &&
+                                     'message' in action.payload
+              ? [{
+                  sender: 'agent' as const,
+                  text: String(action.payload.message),
+                  timestamp: update.data.timestamp,
+                }]
+              : []
+
             const newItem: ReviewItem = {
               id: `review-${Date.now()}`,
               workflowId: update.data.workflowId,
@@ -87,7 +99,7 @@ export default function Screen4ControlRoom() {
               action,
               timestamp: update.data.timestamp,
               needsGuidance,
-              chatHistory: [],
+              chatHistory: initialChatHistory,
             }
             return [...prev, newItem]
           })
@@ -356,7 +368,7 @@ export default function Screen4ControlRoom() {
                                   }`}
                                 >
                                   <div className="font-semibold mb-1">
-                                    {msg.sender === 'user' ? 'You' : item.digitalWorkerName}
+                                    {msg.sender === 'user' ? 'You' : msg.sender === 'agent' ? item.digitalWorkerName : 'System'}
                                   </div>
                                   <div>{msg.text}</div>
                                 </div>
@@ -401,47 +413,52 @@ export default function Screen4ControlRoom() {
                           <MessageSquare className="h-4 w-4 mr-1" />
                           {isChatExpanded ? 'Hide Chat' : 'Chat'}
                         </Button>
-                        {isError ? (
+                        {/* Only show Approve/Reject when chat is NOT expanded */}
+                        {!isChatExpanded && (
                           <>
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={() => handleApprove(item)}
-                              className="flex-1"
-                            >
-                              <CheckCircle className="h-4 w-4 mr-1" />
-                              Retry
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => handleReject(item)}
-                              className="flex-1"
-                            >
-                              <XCircle className="h-4 w-4 mr-1" />
-                              Dismiss
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={() => handleApprove(item)}
-                              className="flex-1"
-                            >
-                              <CheckCircle className="h-4 w-4 mr-1" />
-                              Approve
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => handleReject(item)}
-                              className="flex-1"
-                            >
-                              <XCircle className="h-4 w-4 mr-1" />
-                              Reject
-                            </Button>
+                            {isError ? (
+                              <>
+                                <Button
+                                  variant="primary"
+                                  size="sm"
+                                  onClick={() => handleApprove(item)}
+                                  className="flex-1"
+                                >
+                                  <CheckCircle className="h-4 w-4 mr-1" />
+                                  Retry
+                                </Button>
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => handleReject(item)}
+                                  className="flex-1"
+                                >
+                                  <XCircle className="h-4 w-4 mr-1" />
+                                  Dismiss
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button
+                                  variant="primary"
+                                  size="sm"
+                                  onClick={() => handleApprove(item)}
+                                  className="flex-1"
+                                >
+                                  <CheckCircle className="h-4 w-4 mr-1" />
+                                  Approve
+                                </Button>
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => handleReject(item)}
+                                  className="flex-1"
+                                >
+                                  <XCircle className="h-4 w-4 mr-1" />
+                                  Reject
+                                </Button>
+                              </>
+                            )}
                           </>
                         )}
                       </div>

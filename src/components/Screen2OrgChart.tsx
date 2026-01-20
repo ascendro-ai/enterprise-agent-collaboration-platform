@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import * as d3 from 'd3'
-import { ToggleLeft, ToggleRight } from 'lucide-react'
+import { ToggleLeft, ToggleRight, Send } from 'lucide-react'
 import { useTeam } from '../contexts/TeamContext'
 import { useWorkflows } from '../contexts/WorkflowContext'
 import { useApp } from '../contexts/AppContext'
-import { buildAgentsFromWorkflowRequirements } from '../services/geminiService'
+import { buildAgentsFromWorkflowRequirements, parseNodeCreationRequest } from '../services/geminiService'
 import { startWorkflowExecution } from '../services/workflowExecutionService'
 import {
   logDigitalWorkerActivation,
@@ -15,6 +15,13 @@ import { CONTROL_ROOM_EVENT } from '../utils/constants'
 import { storage } from '../utils/storage'
 import type { NodeData, ControlRoomUpdate } from '../types'
 import Button from './ui/Button'
+import Input from './ui/Input'
+import Card from './ui/Card'
+import {
+  AddDigitalWorkerIcon,
+  AddHumanWorkerIcon,
+  ChangeOrgStructureIcon,
+} from './ui/ExampleIcons'
 
 // Helper function to get initials from name
 function getInitials(name: string): string {
@@ -26,17 +33,196 @@ function getInitials(name: string): string {
 }
 
 export default function Screen2OrgChart() {
-  const { team, toggleNodeStatus, assignWorkflowToNode, ensureDefaultDigitalWorker } = useTeam()
+  const { team, toggleNodeStatus, assignWorkflowToNode, ensureDefaultDigitalWorker, addNode } = useTeam()
   const { workflows, activateWorkflow } = useWorkflows()
   const { user } = useApp()
   const svgRef = useRef<SVGSVGElement>(null)
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null)
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>('')
+  const [chatMessage, setChatMessage] = useState('')
+  const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'system'; text: string }>>([])
+  const [isProcessingChat, setIsProcessingChat] = useState(false)
+  const chatEndRef = useRef<HTMLDivElement>(null)
 
   // Ensure default digital worker exists
   useEffect(() => {
     ensureDefaultDigitalWorker()
   }, [ensureDefaultDigitalWorker])
+
+  // Sync selectedNode when team changes
+  useEffect(() => {
+    if (selectedNode) {
+      const updatedNode = team.find((n) => n.name === selectedNode.name)
+      if (updatedNode) {
+        setSelectedNode(updatedNode)
+      }
+    }
+  }, [team, selectedNode])
+
+  // Scroll chat to bottom
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages])
+
+  // Handle chat message to create new node
+  const handleChatSend = async () => {
+    const messageToSend = chatMessage.trim()
+    if (!messageToSend || isProcessingChat) return
+
+    const userMessage = messageToSend
+    setChatMessage('')
+    setIsProcessingChat(true)
+
+    // Add user message to chat
+    const newMessages = [...chatMessages, { sender: 'user' as const, text: userMessage }]
+    setChatMessages(newMessages)
+
+    try {
+      // Parse the node creation request
+      const parsed = await parseNodeCreationRequest(userMessage, team)
+
+      if (!parsed) {
+        // Not a node creation request
+        setChatMessages([
+          ...newMessages,
+          {
+            sender: 'system',
+            text: "I didn't understand that. Try something like: 'Add a digital worker named Sarah who reports to Chitra M.' or 'Create a human team member called John, Flower Consultant'",
+          },
+        ])
+        setIsProcessingChat(false)
+        return
+      }
+
+      // Check if node already exists
+      const exists = team.some((n) => n.name.toLowerCase() === parsed.name.toLowerCase())
+      if (exists) {
+        setChatMessages([
+          ...newMessages,
+          {
+            sender: 'system',
+            text: `A team member named "${parsed.name}" already exists. Please use a different name.`,
+          },
+        ])
+        setIsProcessingChat(false)
+        return
+      }
+
+      // Find parent node if specified
+      const userName = user?.name || 'Chitra M.'
+      let finalParentName: string | undefined = undefined
+      
+      if (parsed.parentName) {
+        const parentNode = team.find(
+          (n) => n.name.toLowerCase() === parsed.parentName!.toLowerCase()
+        )
+        
+        // Check if parent is the user node
+        if (!parentNode && userName.toLowerCase() === parsed.parentName.toLowerCase()) {
+          finalParentName = userName // Set parent to user name
+        } else if (parentNode) {
+          finalParentName = parsed.parentName // Use the found parent name
+        } else {
+          // Parent not found
+          setChatMessages([
+            ...newMessages,
+            {
+              sender: 'system',
+              text: `Could not find parent node "${parsed.parentName}". Available nodes: ${team.map((n) => n.name).join(', ')}${userName ? `, ${userName}` : ''}`,
+            },
+          ])
+          setIsProcessingChat(false)
+          return
+        }
+      }
+
+      // Create new node
+      const newNode: NodeData = {
+        name: parsed.name,
+        type: parsed.type,
+        role: parsed.role,
+        status: 'inactive',
+        assignedWorkflows: [],
+        parentName: finalParentName, // Set parent if specified
+      }
+
+      // Add node to team
+      addNode(newNode)
+
+      // Success message
+      const successMessage = finalParentName
+        ? `✅ Added "${parsed.name}" (${parsed.type})${parsed.role ? ` as ${parsed.role}` : ''} reporting to ${finalParentName}. The organizational chart will update automatically.`
+        : `✅ Added "${parsed.name}" (${parsed.type})${parsed.role ? ` as ${parsed.role}` : ''} to the team. The organizational chart will update automatically.`
+
+      setChatMessages([
+        ...newMessages,
+        {
+          sender: 'system',
+          text: successMessage,
+        },
+      ])
+    } catch (error) {
+      console.error('Error processing chat message:', error)
+      setChatMessages([
+        ...chatMessages,
+        {
+          sender: 'system',
+          text: 'Sorry, I encountered an error processing your request. Please try again.',
+        },
+      ])
+    } finally {
+      setIsProcessingChat(false)
+    }
+  }
+
+  // Helper function to build hierarchical tree structure from flat team array
+  const buildHierarchy = (flatTeam: NodeData[], userName: string): NodeData => {
+    // Create a map for quick lookup
+    const nodeMap = new Map<string, NodeData>()
+    
+    // Initialize all nodes with empty children arrays
+    flatTeam.forEach((node) => {
+      nodeMap.set(node.name, { ...node, children: [] })
+    })
+    
+    // Build the tree by assigning children to parents
+    const rootChildren: NodeData[] = []
+    
+    flatTeam.forEach((node) => {
+      const nodeWithChildren = nodeMap.get(node.name)!
+      
+      if (node.parentName) {
+        // Check if parent is the user
+        if (node.parentName.toLowerCase() === userName.toLowerCase()) {
+          rootChildren.push(nodeWithChildren)
+        } else {
+          // Find parent in team
+          const parent = nodeMap.get(node.parentName)
+          if (parent) {
+            if (!parent.children) {
+              parent.children = []
+            }
+            parent.children.push(nodeWithChildren)
+          } else {
+            // Parent not found, add to root
+            rootChildren.push(nodeWithChildren)
+          }
+        }
+      } else {
+        // No parent specified, add to root
+        rootChildren.push(nodeWithChildren)
+      }
+    })
+    
+    // Create user node with children
+    return {
+      name: userName,
+      type: 'human',
+      role: user?.title || 'CEO, Treasure blossom',
+      status: 'active',
+      children: rootChildren,
+    }
+  }
 
   // Build D3 org chart
   useEffect(() => {
@@ -48,48 +234,19 @@ export default function Screen2OrgChart() {
     const svg = d3.select(svgRef.current)
     const width = svgRef.current.clientWidth || 800
 
-    // Create user node with digital workers as children
-    // TEMPORARY: Add Sarah as test node to see if D3 calculates positions correctly with multiple children
-    const testTeam = [
-      ...team,
-      {
-        name: 'Sarah',
-        type: 'human' as const,
-        role: 'Flower Consultant',
-        status: 'inactive' as const,
-        assignedWorkflows: [],
-      } as NodeData,
-    ]
-    
-    const userNode: NodeData = {
-      name: user?.name || 'Chitra M.',
-      type: 'human',
-      role: user?.title || 'CEO, Treasure blossom',
-      status: 'active',
-      children: testTeam, // Digital workers report to user (including test node Sarah)
-    }
+    // Build hierarchical structure from flat team array
+    const userName = user?.name || 'Chitra M.'
+    const userNode = buildHierarchy(team, userName)
 
     // Create hierarchical data structure with user at root
     const rootData: any = userNode
     const root = d3.hierarchy(rootData)
-    
-    // DEBUG: Verify hierarchy structure
-    console.log('🔍 [Org Chart Debug] Hierarchy structure:')
-    console.log('  Root:', root.data.name, 'depth:', root.depth, 'children:', root.children?.length)
-    root.children?.forEach((child: any) => {
-      console.log(`    Child: ${child.data.name}, depth: ${child.depth}`)
-    })
     
     // Use D3 tree layout - let it calculate natural tree structure
     // nodeSize([verticalSpacing, horizontalSpacing])
     const treeLayout = d3.tree<NodeData>().nodeSize([300, 200]) // 300px vertical, 200px horizontal spacing
 
     const treeData = treeLayout(root)
-    
-    console.log('🔍 [Org Chart Debug] After D3 layout:')
-    treeData.descendants().forEach((node: any) => {
-      console.log(`  Node: ${node.data.name}, x: ${node.x}, y: ${node.y}, depth: ${node.depth}, parent: ${node.parent?.data.name || 'none'}`)
-    })
 
     // FIX 2: Create a container group for zoom/pan
     const container = svg.append('g').attr('class', 'container')
@@ -105,20 +262,14 @@ export default function Screen2OrgChart() {
 
     // FIX 4: Center the camera - find the root node's position and center on it
     const rootNode = treeData.descendants()[0]
-    console.log('🔍 [Org Chart Debug] Root node:', rootNode)
-    console.log('🔍 [Org Chart Debug] All descendants:', treeData.descendants())
-    console.log('🔍 [Org Chart Debug] Root node data:', rootNode?.data)
-    console.log('🔍 [Org Chart Debug] Root node position - x:', rootNode?.x, 'y:', rootNode?.y)
     
     const rootX = rootNode ? rootNode.y : 0 // Horizontal position of root
     const rootY = rootNode ? rootNode.x : 0 // Vertical position of root
-    console.log('🔍 [Org Chart Debug] Calculated rootX:', rootX, 'rootY:', rootY)
 
     // Center on the root node horizontally, and position it near the top
     const initialTransform = d3.zoomIdentity
       .translate(width / 2 - rootX, 80 - rootY)
       .scale(0.75)
-    console.log('🔍 [Org Chart Debug] Initial transform:', initialTransform.toString())
     svg.call(zoom.transform, initialTransform)
 
     // FIX 5: Use d3.linkVertical() for smooth Bezier curves
@@ -151,9 +302,6 @@ export default function Screen2OrgChart() {
       .enter()
       .append('g')
       .attr('class', 'node')
-      .each((d: any) => {
-        console.log('🎨 [Org Chart Debug] Rendering node:', d.data.name, 'at x:', d.x, 'y:', d.y, 'depth:', d.depth)
-      })
       .attr('transform', (d: any) => {
         // D3 tree layout: x = horizontal, y = vertical
         // SVG transform: translate(x, y) where x = horizontal, y = vertical
@@ -253,46 +401,214 @@ export default function Screen2OrgChart() {
         return d.data.role || ''
       })
 
-    // Add status badge (only for non-human nodes) - green oval with "ACTIVE" text
-    const activeNodes = nodes.filter((d: any) => d.data.type !== 'human' && d.data.status === 'active')
+    // Add status badges for digital workers (matching workflow badge style)
+    // Position badges inside the white card on the right side
+    // Card is 200px wide (x: -100 to +100), positioned centered at node (x: 0)
+    const digitalWorkerNodes = nodes.filter((d: any) => d.data.type !== 'human')
     
-    // Add background oval for active status
-    activeNodes
-      .append('rect')
-      .attr('x', 60)
-      .attr('y', -12)
-      .attr('width', 50)
-      .attr('height', 20)
-      .attr('rx', 10)
-      .attr('fill', '#10B981')
+    // Active badge - green background
+    const activeNodes = digitalWorkerNodes.filter((d: any) => d.data.status === 'active')
+    activeNodes.each(function() {
+      const group = d3.select(this)
+      
+      // Background rounded rectangle (badge) - positioned on right side of card
+      // Card right edge is at x: 100, badge width is 50px
+      // Position at x: 45 so it ends at x: 95 (5px margin from right edge)
+      group
+        .append('rect')
+        .attr('x', 45)
+        .attr('y', -10)
+        .attr('width', 50)
+        .attr('height', 20)
+        .attr('rx', 10)
+        .attr('fill', '#10B981')
+        .attr('filter', 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1))')
+      
+      // "Active" text - centered in badge (x: 45 + 25 = 70)
+      group
+        .append('text')
+        .attr('x', 70)
+        .attr('y', 0)
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'middle')
+        .attr('font-size', '10px')
+        .attr('font-weight', '600')
+        .attr('fill', '#FFFFFF')
+        .text('Active')
+    })
     
-    // Add "ACTIVE" text
-    activeNodes
-      .append('text')
-      .attr('x', 85)
-      .attr('y', 0)
-      .attr('text-anchor', 'middle')
-      .attr('dominant-baseline', 'middle')
-      .attr('font-size', '10px')
-      .attr('font-weight', '600')
-      .attr('fill', '#FFFFFF')
-      .text('ACTIVE')
-    
-    // Add status indicator for inactive/needs attention (small dot)
-    nodes
-      .filter((d: any) => d.data.type !== 'human' && d.data.status !== 'active')
-      .append('circle')
-      .attr('r', 6)
-      .attr('cx', 80)
-      .attr('cy', -20)
-      .attr('fill', (d: any) => {
-        if (d.data.status === 'needs_attention') return '#F59E0B'
-        return '#9CA3AF'
-      })
+    // Inactive badge - grey background
+    const inactiveNodes = digitalWorkerNodes.filter((d: any) => d.data.status !== 'active')
+    inactiveNodes.each(function() {
+      const group = d3.select(this)
+      
+      // Background rounded rectangle (badge) - positioned on right side of card
+      // Card right edge is at x: 100, badge width is 60px
+      // Position at x: 35 so it ends at x: 95 (5px margin from right edge)
+      group
+        .append('rect')
+        .attr('x', 35)
+        .attr('y', -10)
+        .attr('width', 60)
+        .attr('height', 20)
+        .attr('rx', 10)
+        .attr('fill', '#9CA3AF')
+        .attr('filter', 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1))')
+      
+      // "Inactive" text - centered in badge (x: 35 + 30 = 65)
+      group
+        .append('text')
+        .attr('x', 65)
+        .attr('y', 0)
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'middle')
+        .attr('font-size', '10px')
+        .attr('font-weight', '600')
+        .attr('fill', '#FFFFFF')
+        .text('Inactive')
+    })
   }, [team, user])
 
   // Show all workflows, not just active ones
   const availableWorkflows = workflows
+
+  // Example team actions for inspiration
+  const exampleTeamActions = [
+    {
+      title: 'Add Digital Worker',
+      description: 'Create an AI agent to handle automated tasks and workflows.',
+      prompt: 'Add a digital worker named Email Bot to handle customer email responses',
+      icon: AddDigitalWorkerIcon,
+    },
+    {
+      title: 'Add Human Worker',
+      description: 'Add a team member who collaborates with digital workers.',
+      prompt: 'Add Sarah as a human worker, Flower Consultant, reporting to Chitra M.',
+      icon: AddHumanWorkerIcon,
+    },
+    {
+      title: 'Change Org Structure',
+      description: 'Reorganize your team hierarchy and reporting relationships.',
+      prompt: 'Move Digi to report under Sarah instead of Chitra M.',
+      icon: ChangeOrgStructureIcon,
+    },
+  ]
+
+  // Handle example card click - reuse handleChatSend logic
+  const handleExampleClick = async (prompt: string) => {
+    if (isProcessingChat) return
+    // Set the message and trigger send
+    setChatMessage(prompt)
+    // Use a small delay to ensure state is updated, then send
+    setTimeout(async () => {
+      const messageToSend = prompt.trim()
+      if (!messageToSend) return
+
+      setIsProcessingChat(true)
+
+      // Add user message to chat
+      const newMessages = [...chatMessages, { sender: 'user' as const, text: messageToSend }]
+      setChatMessages(newMessages)
+
+      try {
+        // Parse the node creation request
+        const parsed = await parseNodeCreationRequest(messageToSend, team)
+
+        if (!parsed) {
+          // Not a node creation request
+          setChatMessages([
+            ...newMessages,
+            {
+              sender: 'system',
+              text: "I didn't understand that. Try something like: 'Add a digital worker named Sarah who reports to Chitra M.' or 'Create a human team member called John, Flower Consultant'",
+            },
+          ])
+          setIsProcessingChat(false)
+          return
+        }
+
+        // Check if node already exists
+        const exists = team.some((n) => n.name.toLowerCase() === parsed.name.toLowerCase())
+        if (exists) {
+          setChatMessages([
+            ...newMessages,
+            {
+              sender: 'system',
+              text: `A team member named "${parsed.name}" already exists. Please use a different name.`,
+            },
+          ])
+          setIsProcessingChat(false)
+          return
+        }
+
+        // Find parent node if specified
+        const userName = user?.name || 'Chitra M.'
+        let finalParentName: string | undefined = undefined
+        
+        if (parsed.parentName) {
+          const parentNode = team.find(
+            (n) => n.name.toLowerCase() === parsed.parentName!.toLowerCase()
+          )
+          
+          // Check if parent is the user node
+          if (!parentNode && userName.toLowerCase() === parsed.parentName.toLowerCase()) {
+            finalParentName = userName // Set parent to user name
+          } else if (parentNode) {
+            finalParentName = parsed.parentName // Use the found parent name
+          } else {
+            // Parent not found
+            setChatMessages([
+              ...newMessages,
+              {
+                sender: 'system',
+                text: `Could not find parent node "${parsed.parentName}". Available nodes: ${team.map((n) => n.name).join(', ')}${userName ? `, ${userName}` : ''}`,
+              },
+            ])
+            setIsProcessingChat(false)
+            return
+          }
+        }
+
+        // Create new node
+        const newNode: NodeData = {
+          name: parsed.name,
+          type: parsed.type,
+          role: parsed.role,
+          status: 'inactive',
+          assignedWorkflows: [],
+          parentName: finalParentName, // Set parent if specified
+        }
+
+        // Add node to team
+        addNode(newNode)
+
+        // Success message
+        const successMessage = finalParentName
+          ? `✅ Added "${parsed.name}" (${parsed.type})${parsed.role ? ` as ${parsed.role}` : ''} reporting to ${finalParentName}. The organizational chart will update automatically.`
+          : `✅ Added "${parsed.name}" (${parsed.type})${parsed.role ? ` as ${parsed.role}` : ''} to the team. The organizational chart will update automatically.`
+
+        setChatMessages([
+          ...newMessages,
+          {
+            sender: 'system',
+            text: successMessage,
+          },
+        ])
+        setChatMessage('') // Clear input
+      } catch (error) {
+        console.error('Error processing chat message:', error)
+        setChatMessages([
+          ...newMessages,
+          {
+            sender: 'system',
+            text: 'Sorry, I encountered an error processing your request. Please try again.',
+          },
+        ])
+      } finally {
+        setIsProcessingChat(false)
+      }
+    }, 50)
+  }
 
   const handleWorkflowAssign = async () => {
     if (!selectedNode || !selectedWorkflowId) return
@@ -419,10 +735,12 @@ export default function Screen2OrgChart() {
     <div className="flex flex-col h-screen bg-gray-light">
       {/* Header */}
       <div className="p-6 bg-white border-b border-gray-lighter">
-        <h1 className="text-2xl font-semibold text-gray-dark mb-2">Your Team</h1>
-        <p className="text-sm text-gray-darker">
-          Drag canvas to pan • Click digital workers to assign workflows
-        </p>
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-dark mb-2">Your Team</h1>
+          <p className="text-sm text-gray-darker">
+            Drag canvas to pan • Click digital workers to assign workflows
+          </p>
+        </div>
       </div>
 
       {/* Canvas Area */}
@@ -432,7 +750,7 @@ export default function Screen2OrgChart() {
 
       {/* Node Details Panel */}
       {selectedNode && (
-        <div className="absolute bottom-4 right-4 w-80 bg-white rounded-lg shadow-lg p-4 border border-gray-lighter">
+        <div className="absolute bottom-[200px] right-4 w-80 bg-white rounded-lg shadow-lg p-4 border border-gray-lighter z-10">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-gray-dark">
               {selectedNode.name === 'default' || selectedNode.name.toLowerCase().includes('default') 
@@ -529,6 +847,129 @@ export default function Screen2OrgChart() {
           </div>
         </div>
       )}
+
+      {/* Chat Area - Compact bottom section */}
+      <div className="border-t border-gray-lighter bg-white">
+        {/* Example Cards or Messages */}
+        {chatMessages.length === 0 ? (
+          <div className="p-4">
+            {/* Example Cards - Compact horizontal layout with icons */}
+            <div className="flex gap-3 mb-3">
+              {exampleTeamActions.map((example, index) => {
+                const Icon = example.icon
+                return (
+                  <Card
+                    key={index}
+                    variant="outlined"
+                    className="flex-1 p-4 cursor-pointer hover:bg-gray-light transition-colors"
+                    onClick={() => handleExampleClick(example.prompt)}
+                  >
+                    <div className="flex items-start gap-3">
+                      <Icon />
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-gray-dark mb-1">
+                          {example.title}
+                        </h3>
+                        <p className="text-sm text-gray-darker">
+                          {example.description}
+                        </p>
+                      </div>
+                    </div>
+                  </Card>
+                )
+              })}
+            </div>
+
+            {/* Input Area */}
+            <div className="flex items-center gap-2">
+              <div className="flex-1 relative">
+                <Input
+                  value={chatMessage}
+                  onChange={(e) => setChatMessage(e.target.value)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleChatSend()
+                    }
+                  }}
+                  placeholder="Message Team Architect..."
+                  disabled={isProcessingChat}
+                  className="w-full"
+                />
+              </div>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleChatSend}
+                disabled={!chatMessage.trim() || isProcessingChat}
+              >
+                <Send className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col max-h-[200px]">
+            {/* Messages Area - Compact scrollable */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {chatMessages.map((msg, index) => (
+                <div
+                  key={index}
+                  className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-2xl rounded-lg px-3 py-1.5 text-sm ${
+                      msg.sender === 'user'
+                        ? 'bg-gray-lighter text-gray-dark'
+                        : 'bg-gray-light text-gray-dark'
+                    }`}
+                  >
+                    {msg.text}
+                  </div>
+                </div>
+              ))}
+              {isProcessingChat && (
+                <div className="flex justify-start">
+                  <div className="flex gap-1 px-3 py-1.5">
+                    <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                    <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                    <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Input Area */}
+            <div className="p-4 border-t border-gray-lighter">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 relative">
+                  <Input
+                    value={chatMessage}
+                    onChange={(e) => setChatMessage(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        handleChatSend()
+                      }
+                    }}
+                    placeholder="Message Team Architect..."
+                    disabled={isProcessingChat}
+                    className="w-full"
+                  />
+                </div>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleChatSend}
+                  disabled={!chatMessage.trim() || isProcessingChat}
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

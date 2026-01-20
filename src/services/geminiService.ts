@@ -15,7 +15,7 @@ import type {
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY
 
 if (!apiKey) {
-  console.warn('VITE_GEMINI_API_KEY is not set')
+  console.error('❌ VITE_GEMINI_API_KEY is not set in environment variables')
 }
 
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null
@@ -33,11 +33,6 @@ export async function consultWorkflow(
   conversationHistory: ConversationMessage[],
   questionCount: number
 ): Promise<{ response: string; isComplete: boolean }> {
-  if (!genAI) {
-    throw new Error('Gemini API key is not configured')
-  }
-
-  const model = getModel()
   const maxQuestions = GEMINI_CONFIG.MAX_QUESTIONS
 
   // Get the last user message
@@ -230,26 +225,29 @@ IMPORTANT - DO NOT include question counts or progress indicators in your respon
     userInputLower === 'got it'
   )
 
-  const prompt = `${systemPrompt}
-
-Current conversation:
+  const userPrompt = `Current conversation:
 ${conversationText}
 
 The user just said: "${userInput}"
 
 ${isFinalConfirmation ? `The user has indicated they're ready to move forward and build. This is a clear signal to wrap up. Give a brief, friendly acknowledgment (1-2 sentences MAX) and let them know they can check "Your Workflows" tab to see the workflow and start configuring it. Do NOT ask any questions. Do NOT ask if they want to clarify anything. Do NOT summarize the workflow again. Just acknowledge and wrap up gracefully.` : isIntermediateAck ? `The user is acknowledging what you said. Simply acknowledge their acknowledgment briefly and continue the conversation naturally. Do NOT summarize. Just acknowledge and ask your next question or continue exploring.` : hasRecentSummary ? `The user is continuing the conversation after a recent summary. Do NOT summarize again - we just did that. If they're asking a question, answer it. If they're providing more info, acknowledge it. Do NOT ask new questions unless they're directly related to what they just said.` : questionCount >= maxQuestions ? `You have reached the maximum number of questions. Provide a helpful summary focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Workflows" tab, they can see the workflow and start configuring it. Do NOT list individual AI agents - just confirm the workflow steps. Do NOT ask if they're ready - just summarize and wrap up.` : questionCount >= 3 ? `You have asked ${questionCount} questions. Provide a summary of what you understand about the workflow, focusing on the workflow steps (what needs to happen, in what order). Tell the user that in "Your Workflows" tab, they can see the workflow and start configuring it. Do NOT ask if they're ready to build - just summarize and let them know where to go next.` : `Ask your next question to understand the workflow better. Focus on high-level workflow understanding, not technical details.`}`
 
-  try {
-    const result = await model.generateContent(prompt)
-    const response = result.response.text()
-    // Mark as complete if: reached max questions OR user indicated readiness
-    const isComplete = questionCount >= maxQuestions || (isFinalConfirmation === true)
-
-    return { response, isComplete }
-  } catch (error) {
-    console.error('Error in consultWorkflow:', error)
-    throw new Error('Failed to get consultant response')
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
   }
+
+  const model = getModel()
+  const prompt = `${systemPrompt}
+
+${userPrompt}`
+
+  const result = await model.generateContent(prompt)
+  const response = result.response.text()
+  
+  // Mark as complete if: reached max questions OR user indicated readiness
+  const isComplete = questionCount >= maxQuestions || (isFinalConfirmation === true)
+
+  return { response, isComplete }
 }
 
 // Extract workflow from conversation - real-time background extraction
@@ -292,7 +290,7 @@ AUTO-ASSIGNMENT LOGIC:
 - If step is explicitly described as manual or done by a person → assignedTo.type = "human"
 - If unclear → default to "ai" for automatable steps (email, Excel, PDF, calculations)
 
-Return ONLY a valid JSON object (no markdown, no code blocks, just JSON):
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON only:
 {
   "workflowName": "Descriptive workflow name",
   "description": "Brief description of what this workflow does",
@@ -320,48 +318,64 @@ IMPORTANT:
 Conversation:
 ${conversationText}`
 
-  try {
-    const result = await model.generateContent(prompt)
-    const response = result.response.text()
+  // Retry logic with exponential backoff for network/timeout errors
+  const maxRetries = 3
+  const baseDelay = 1000 // 1 second
 
-    // Try to extract JSON from response
-    const jsonMatch = response.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      console.warn('No JSON found in extraction response')
-      return null
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent(prompt)
+      const response = result.response.text().trim()
+
+      // Extract JSON object from plaintext response
+      const jsonMatch = response.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) {
+        return null
+      }
+
+      let workflowData
+      try {
+        workflowData = JSON.parse(jsonMatch[0])
+      } catch (parseError) {
+        return null
+      }
+
+      // Generate IDs for steps if not provided
+      const steps: WorkflowStep[] = workflowData.steps.map((step: any, index: number) => ({
+        id: step.id || `step-${index + 1}`,
+        label: step.label,
+        type: step.type || 'action',
+        order: step.order !== undefined ? step.order : index,
+        assignedTo: step.assignedTo || undefined,
+      }))
+
+      // Ensure at least one step
+      if (steps.length === 0) {
+        return null
+      }
+
+      const workflow: Workflow = {
+        id: existingWorkflowId || `workflow-${Date.now()}`,
+        name: workflowData.workflowName || workflowData.name || 'Untitled Workflow',
+        description: workflowData.description,
+        steps,
+        status: 'draft',
+        createdAt: existingWorkflowId ? undefined : new Date(),
+        updatedAt: new Date(),
+      }
+
+      return workflow
+    } catch (error) {
+      // If not the last attempt, wait before retrying
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1) // Exponential backoff: 1s, 2s, 4s
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
     }
-
-    const workflowData = JSON.parse(jsonMatch[0])
-
-    // Generate IDs for steps if not provided
-    const steps: WorkflowStep[] = workflowData.steps.map((step: any, index: number) => ({
-      id: step.id || `step-${index + 1}`,
-      label: step.label,
-      type: step.type || 'action',
-      order: step.order !== undefined ? step.order : index,
-      assignedTo: step.assignedTo || undefined,
-    }))
-
-    // Ensure at least one step
-    if (steps.length === 0) {
-      return null
-    }
-
-    const workflow: Workflow = {
-      id: existingWorkflowId || `workflow-${Date.now()}`,
-      name: workflowData.workflowName || workflowData.name || 'Untitled Workflow',
-      description: workflowData.description,
-      steps,
-      status: 'draft',
-      createdAt: existingWorkflowId ? undefined : new Date(),
-      updatedAt: new Date(),
-    }
-
-    return workflow
-  } catch (error) {
-    console.error('Error extracting workflow:', error)
-    return null
   }
+
+  // All retries failed - log but don't throw (background extraction should be silent)
+  return null
 }
 
 // Requirements gathering LLM
@@ -397,9 +411,23 @@ export async function buildAutomation(
 
   const prompt = `You are helping gather requirements for a workflow step: "${step.label}"
 
+STEP TYPE: ${step.type}
+
 ${createTaskContext}
 
-STRATEGIC APPROACH:
+${step.type === 'trigger' 
+  ? `SPECIAL HANDLING FOR TRIGGER STEPS:
+- Trigger steps are events that start workflows (e.g., "every 1 minute", "when email received", "on schedule")
+- CRITICAL: Trigger steps are UNIQUE - they are the ONLY step that starts workflow execution
+- For greenList, extract REQUIRED CONDITIONS that must be met for the trigger to fire
+  * Examples: "email received", "every 1 minute", "when form submitted", "customer inquiry comes in"
+  * These are conditions that enable the trigger
+- For redList, extract EXCEPTIONS that prevent the trigger from firing
+  * Examples: "don't trigger on weekends", "don't trigger if workflow already running", "don't trigger during business hours"
+  * These are conditions that would block/disable the trigger
+- Focus on requirementsText describing when/how the trigger fires (schedule, event conditions, frequency, etc.)
+- Outstanding questions should focus on trigger timing, conditions, or frequency`
+  : `STRATEGIC APPROACH:
 1. Analyze what information you have vs. what you need
 2. Generate outstanding questions (what you still need to discover)
 3. Based on answers so far, infer greenList (allowed actions) and redList (forbidden actions)
@@ -409,13 +437,19 @@ RELATIONSHIP BETWEEN QUESTIONS AND CONSTRAINTS:
 - Outstanding questions help discover what should go in greenList/redList
 - As questions are answered, you can infer more specific constraints
 - GreenList/redList might reveal new questions (e.g., "If we can't do X, how do we handle Y?")
-- They work together iteratively - questions → constraints → more questions
+- They work together iteratively - questions → constraints → more questions`}
 
-Based on the conversation, extract:
+Based on the conversation${conversationText ? ' and context' : ' context'}, extract:
 1. Requirements text (what needs to be done)
 2. Outstanding questions - strategic questions you need answered to fully understand requirements (prioritize by importance)
-3. GreenList - allowed actions/behaviors (infer from what's been discussed, even if partially)
-4. RedList - forbidden actions/behaviors (infer from what's been discussed, even if partially)
+${step.type === 'trigger' 
+  ? `3. GreenList - REQUIRED CONDITIONS that must be met for the trigger to fire (conditions that enable the trigger)
+4. RedList - EXCEPTIONS that prevent the trigger from firing (conditions that block/disable the trigger)`
+  : step.type === 'end'
+  ? `3. GreenList - COMPLETION CRITERIA that must be met for the workflow to complete successfully
+4. RedList - EXCEPTIONS that prevent successful completion (conditions that block completion)`
+  : `3. GreenList - allowed actions/behaviors (infer from what's been discussed, even if partially)
+4. RedList - forbidden actions/behaviors (infer from what's been discussed, even if partially)`}
 5. Custom requirements array
 
 IMPORTANT:
@@ -425,8 +459,9 @@ IMPORTANT:
 - Outstanding questions should help discover what's MISSING from greenList/redList
 - Be specific and actionable with questions (not vague)
 - Order questions by priority (most critical first)
+${step.type === 'trigger' ? '- For triggers, extract required conditions (when trigger fires) and exceptions (when trigger is blocked)' : step.type === 'end' ? '- For end steps, extract completion criteria (what indicates success) and exceptions (what prevents completion)' : ''}
 
-Return ONLY a valid JSON object:
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON only:
 {
   "requirementsText": "Description of requirements",
   "blueprint": {
@@ -437,8 +472,7 @@ Return ONLY a valid JSON object:
   "customRequirements": ["requirement 1", "requirement 2"]
 }
 
-Conversation:
-${conversationText}`
+${conversationText ? `Conversation:\n${conversationText}` : 'Use only the Create a Task context provided above to infer initial requirements.'}`
 
   try {
     const result = await model.generateContent(prompt)
@@ -449,7 +483,12 @@ ${conversationText}`
       throw new Error('Failed to parse requirements')
     }
 
-    const data = JSON.parse(jsonMatch[0])
+    let data
+    try {
+      data = JSON.parse(jsonMatch[0])
+    } catch (parseError) {
+      throw new Error('Failed to parse requirements JSON')
+    }
 
     return {
       requirementsText: data.requirementsText || '',
@@ -463,6 +502,422 @@ ${conversationText}`
   } catch (error) {
     console.error('Error building automation:', error)
     throw new Error('Failed to build automation requirements')
+  }
+}
+
+// Generate initial message for trigger step configuration
+export async function getInitialTriggerMessage(
+  step: WorkflowStep,
+  workflowName: string,
+  createTaskConversation?: ConversationMessage[]
+): Promise<string> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const createTaskContext = createTaskConversation
+    ? `\n\nCONTEXT FROM INITIAL WORKFLOW CONVERSATION:\n${createTaskConversation
+        .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+        .join('\n')}`
+    : ''
+
+  const prompt = `You are helping configure a trigger step for a workflow. 
+
+CRITICAL - TRIGGER STEP UNIQUENESS:
+- A trigger step is UNIQUE - it is the ONLY step that starts the workflow execution
+- When the trigger fires, it automatically initiates the entire workflow
+- There is ONLY ONE trigger step per workflow - it is the entry point
+- The trigger configuration determines WHEN the workflow begins (schedule, event, condition)
+- This is NOT a regular action step - it's a special workflow starter
+
+WORKFLOW: "${workflowName}"
+TRIGGER STEP: "${step.label}"
+
+${createTaskContext}
+
+Your goal is to understand when this workflow should start through natural conversation. Ask questions about:
+- Schedule (e.g., "every 1 minute", "daily at 9am", "weekly on Monday")
+- Events (e.g., "when email received", "when form submitted")
+- Conditions (e.g., "when customer inquiry comes in")
+
+Generate a friendly, conversational initial message to start understanding when this workflow should trigger. Be exploratory and ask clarifying questions.
+
+Return ONLY plaintext. Do not use markdown formatting, code blocks, or any markdown syntax. Return raw text only.`
+
+  try {
+    const result = await model.generateContent(prompt)
+    return result.response.text().trim()
+  } catch (error) {
+    console.error('Error generating initial trigger message:', error)
+    return `Hi! I'm here to help you configure when "${step.label}" should trigger. When should this workflow start automatically?`
+  }
+}
+
+// Conversational trigger configuration LLM
+export async function gatherTriggerConversation(
+  step: WorkflowStep,
+  conversationHistory: ConversationMessage[],
+  createTaskConversation?: ConversationMessage[]
+): Promise<string> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const conversationText = conversationHistory
+    .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+    .join('\n')
+
+  const createTaskContext = createTaskConversation
+    ? `\n\nCONTEXT FROM INITIAL WORKFLOW CONVERSATION:\n${createTaskConversation
+        .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+        .join('\n')}`
+    : ''
+
+  const prompt = `You are helping configure a trigger step for a workflow.
+
+CRITICAL - TRIGGER STEP UNIQUENESS:
+- A trigger step is UNIQUE - it is the ONLY step that starts the workflow execution
+- When the trigger fires, it automatically initiates the entire workflow
+- There is ONLY ONE trigger step per workflow - it is the entry point
+- The trigger configuration determines WHEN the workflow begins (schedule, event, condition)
+- This is NOT a regular action step - it's a special workflow starter
+
+WORKFLOW STEP: "${step.label}"
+
+${createTaskContext}
+
+CONVERSATION STYLE:
+- Be friendly, conversational, and helpful
+- Acknowledge what the user just said before responding
+- Ask clarifying questions about schedule, events, or conditions
+- Focus on understanding WHEN the workflow should start
+- Be exploratory and collaborative, not directive
+- When you have enough information, summarize the trigger configuration
+
+IMPORTANT:
+- Respond conversationally to what the user just said
+- If they answered a question, acknowledge their answer
+- If they provided trigger information, acknowledge it and ask follow-ups if needed
+- Keep responses concise and focused (2-4 sentences typically)
+
+Conversation so far:
+${conversationText}
+
+Generate a conversational response to the user's last message. Be friendly, acknowledge what they said, and continue understanding the trigger configuration naturally. Return ONLY plaintext. Do not use markdown formatting, code blocks, or any markdown syntax. Return raw text only.`
+
+  try {
+    const result = await model.generateContent(prompt)
+    return result.response.text().trim()
+  } catch (error) {
+    console.error('Error generating trigger conversation:', error)
+    throw new Error('Failed to generate trigger conversation')
+  }
+}
+
+// Generate initial message for end step configuration
+export async function getInitialEndMessage(
+  step: WorkflowStep,
+  workflowName: string,
+  createTaskConversation?: ConversationMessage[]
+): Promise<string> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const createTaskContext = createTaskConversation
+    ? `\n\nCONTEXT FROM INITIAL WORKFLOW CONVERSATION:\n${createTaskConversation
+        .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+        .join('\n')}`
+    : ''
+
+  const prompt = `You are helping configure an end step for a workflow.
+
+CRITICAL - END STEP UNIQUENESS:
+- An end step is UNIQUE - it is the ONLY step that closes/completes the workflow execution
+- When the end step is reached, the workflow automatically terminates
+- There is ONLY ONE end step per workflow - it is the exit point
+- The end step configuration determines WHAT happens when the workflow finishes (completion message, final actions)
+- This is NOT a regular action step - it's a special workflow closer
+
+WORKFLOW: "${workflowName}"
+END STEP: "${step.label}"
+
+${createTaskContext}
+
+Your goal is to understand what should happen when this workflow completes through natural conversation. Ask questions about:
+- Completion message (what to show when workflow finishes)
+- Final actions (notifications, logging, etc.)
+- Success criteria
+
+Generate a friendly, conversational initial message to start understanding what happens when this workflow completes. Be exploratory and ask clarifying questions.
+
+Return ONLY plaintext. Do not use markdown formatting, code blocks, or any markdown syntax. Return raw text only.`
+
+  try {
+    const result = await model.generateContent(prompt)
+    return result.response.text().trim()
+  } catch (error) {
+    console.error('Error generating initial end message:', error)
+    return `Hi! I'm here to help you configure what happens when "${step.label}" completes. What should happen when this workflow finishes?`
+  }
+}
+
+// Conversational end step configuration LLM
+export async function gatherEndConversation(
+  step: WorkflowStep,
+  conversationHistory: ConversationMessage[],
+  createTaskConversation?: ConversationMessage[]
+): Promise<string> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const conversationText = conversationHistory
+    .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+    .join('\n')
+
+  const createTaskContext = createTaskConversation
+    ? `\n\nCONTEXT FROM INITIAL WORKFLOW CONVERSATION:\n${createTaskConversation
+        .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+        .join('\n')}`
+    : ''
+
+  const prompt = `You are helping configure an end step for a workflow.
+
+CRITICAL - END STEP UNIQUENESS:
+- An end step is UNIQUE - it is the ONLY step that closes/completes the workflow execution
+- When the end step is reached, the workflow automatically terminates
+- There is ONLY ONE end step per workflow - it is the exit point
+- The end step configuration determines WHAT happens when the workflow finishes (completion message, final actions)
+- This is NOT a regular action step - it's a special workflow closer
+
+WORKFLOW STEP: "${step.label}"
+
+${createTaskContext}
+
+CONVERSATION STYLE:
+- Be friendly, conversational, and helpful
+- Acknowledge what the user just said before responding
+- Ask clarifying questions about completion message and final actions
+- Focus on understanding WHAT happens when the workflow completes
+- Be exploratory and collaborative, not directive
+- When you have enough information, summarize the completion configuration
+
+IMPORTANT:
+- Respond conversationally to what the user just said
+- If they answered a question, acknowledge their answer
+- If they provided completion information, acknowledge it and ask follow-ups if needed
+- Keep responses concise and focused (2-4 sentences typically)
+
+Conversation so far:
+${conversationText}
+
+Generate a conversational response to the user's last message. Be friendly, acknowledge what they said, and continue understanding the completion configuration naturally. Return ONLY plaintext. Do not use markdown formatting, code blocks, or any markdown syntax. Return raw text only.`
+
+  try {
+    const result = await model.generateContent(prompt)
+    return result.response.text().trim()
+  } catch (error) {
+    console.error('Error generating end conversation:', error)
+    throw new Error('Failed to generate end conversation')
+  }
+}
+
+// Extract trigger configuration from conversation
+export async function extractTriggerConfiguration(
+  step: WorkflowStep,
+  conversationHistory: ConversationMessage[],
+  createTaskConversation?: ConversationMessage[]
+): Promise<{
+  requirementsText: string
+  blueprint: {
+    greenList: string[]
+    redList: string[]
+    outstandingQuestions?: string[]
+  }
+}> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const conversationText = conversationHistory
+    .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+    .join('\n')
+
+  const createTaskContext = createTaskConversation
+    ? `\n\nCONTEXT FROM INITIAL WORKFLOW CONVERSATION:\n${createTaskConversation
+        .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+        .join('\n')}`
+    : ''
+
+  const prompt = `Extract trigger configuration from this conversation. A trigger determines when a workflow should automatically start.
+
+CRITICAL - TRIGGER STEP UNIQUENESS:
+- A trigger step is UNIQUE - it is the ONLY step that starts the workflow execution
+- When the trigger fires, it automatically initiates the entire workflow
+- There is ONLY ONE trigger step per workflow - it is the entry point
+
+WORKFLOW STEP: "${step.label}"
+
+${createTaskContext}
+
+Based on the conversation, extract:
+1. Requirements text: Description of when/how the trigger fires (schedule, event conditions, frequency, etc.)
+2. Required Conditions (greenList): Conditions that MUST be met for the trigger to fire
+   - Examples: "email received", "every 1 minute", "when form submitted", "customer inquiry comes in"
+   - These are the conditions that enable the trigger
+3. Exceptions (redList): Conditions that PREVENT the trigger from firing
+   - Examples: "don't trigger on weekends", "don't trigger if workflow already running", "don't trigger during business hours"
+   - These are conditions that would block/disable the trigger
+4. Outstanding Questions: Questions about trigger timing, conditions, or frequency that still need answers
+
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON only:
+{
+  "requirementsText": "Description of when/how the trigger fires",
+  "blueprint": {
+    "greenList": ["required condition 1", "required condition 2"],
+    "redList": ["exception 1", "exception 2"],
+    "outstandingQuestions": ["question 1", "question 2"]
+  }
+}
+
+Conversation:
+${conversationText}`
+
+  try {
+    const result = await model.generateContent(prompt)
+    const response = result.response.text().trim()
+
+    // Extract JSON object from plaintext response
+    const jsonMatch = response.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      throw new Error('Failed to parse trigger configuration: No JSON found in response')
+    }
+
+    let data
+    try {
+      data = JSON.parse(jsonMatch[0])
+    } catch (parseError) {
+      throw new Error('Failed to parse trigger configuration JSON')
+    }
+
+    return {
+      requirementsText: data.requirementsText || '',
+      blueprint: {
+        greenList: data.blueprint?.greenList || [],
+        redList: data.blueprint?.redList || [],
+        outstandingQuestions: data.blueprint?.outstandingQuestions || [],
+      },
+    }
+  } catch (error) {
+    console.error('Error extracting trigger configuration:', error)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    throw new Error(`Failed to extract trigger configuration: ${errorMessage}`)
+  }
+}
+
+// Extract end step configuration from conversation
+export async function extractEndConfiguration(
+  step: WorkflowStep,
+  conversationHistory: ConversationMessage[],
+  createTaskConversation?: ConversationMessage[]
+): Promise<{
+  requirementsText: string
+  blueprint: {
+    greenList: string[]
+    redList: string[]
+    outstandingQuestions?: string[]
+  }
+}> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const conversationText = conversationHistory
+    .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+    .join('\n')
+
+  const createTaskContext = createTaskConversation
+    ? `\n\nCONTEXT FROM INITIAL WORKFLOW CONVERSATION:\n${createTaskConversation
+        .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+        .join('\n')}`
+    : ''
+
+  const prompt = `Extract end step configuration from this conversation. An end step defines what happens when a workflow completes.
+
+CRITICAL - END STEP UNIQUENESS:
+- An end step is UNIQUE - it is the ONLY step that closes/completes the workflow execution
+- When the end step is reached, the workflow automatically terminates
+- There is ONLY ONE end step per workflow - it is the exit point
+
+WORKFLOW STEP: "${step.label}"
+
+${createTaskContext}
+
+Based on the conversation, extract:
+1. Requirements text: Description of what happens when the workflow completes (completion message, final actions, etc.)
+2. Completion Criteria (greenList): Criteria that MUST be met for the workflow to be considered complete
+   - Examples: "email sent to customer", "quote delivered", "all steps completed successfully", "notification sent"
+   - These are the conditions that indicate successful completion
+3. Exceptions (redList): Conditions that PREVENT the workflow from completing successfully
+   - Examples: "don't complete if email fails", "don't complete if quote is invalid", "don't complete if errors occur"
+   - These are conditions that would block successful completion
+4. Outstanding Questions: Questions about completion message, final actions, or success criteria that still need answers
+
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON only:
+{
+  "requirementsText": "Description of what happens when workflow completes",
+  "blueprint": {
+    "greenList": ["completion criterion 1", "completion criterion 2"],
+    "redList": ["exception 1", "exception 2"],
+    "outstandingQuestions": ["question 1", "question 2"]
+  }
+}
+
+Conversation:
+${conversationText}`
+
+  try {
+    const result = await model.generateContent(prompt)
+    const response = result.response.text().trim()
+
+    // Extract JSON object from plaintext response
+    const jsonMatch = response.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      throw new Error('Failed to parse end configuration: No JSON found in response')
+    }
+
+    let data
+    try {
+      data = JSON.parse(jsonMatch[0])
+    } catch (parseError) {
+      throw new Error('Failed to parse end configuration JSON')
+    }
+
+    return {
+      requirementsText: data.requirementsText || '',
+      blueprint: {
+        greenList: data.blueprint?.greenList || [],
+        redList: data.blueprint?.redList || [],
+        outstandingQuestions: data.blueprint?.outstandingQuestions || [],
+      },
+    }
+  } catch (error) {
+    console.error('Error extracting end configuration:', error)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    throw new Error(`Failed to extract end configuration: ${errorMessage}`)
   }
 }
 
@@ -499,7 +954,7 @@ Generate a friendly, conversational initial message to start gathering requireme
 - Ask an initial exploratory question to understand what this step needs to accomplish
 - Be conversational and friendly, not directive
 
-Return ONLY the message text, no JSON, no quotes.`
+Return ONLY plaintext. Do not use markdown formatting, code blocks, or any markdown syntax. Return raw text only.`
 
   try {
     const result = await model.generateContent(prompt)
@@ -560,7 +1015,7 @@ IMPORTANT:
 Conversation so far:
 ${conversationText}
 
-Generate a conversational response to the user's last message. Be friendly, acknowledge what they said, and continue gathering requirements naturally. Return ONLY the response text, no JSON, no quotes.`
+Generate a conversational response to the user's last message. Be friendly, acknowledge what they said, and continue gathering requirements naturally. Return ONLY plaintext. Do not use markdown formatting, code blocks, or any markdown syntax. Return raw text only.`
 
   try {
     const result = await model.generateContent(prompt)
@@ -600,16 +1055,32 @@ export async function buildAgentsFromWorkflowRequirements(
   }
 
   const prompt = `Analyze this workflow and intelligently group steps into shared AI agents.
-Group steps that:
+
+CRITICAL - TRIGGER AND END STEP UNIQUENESS:
+- TRIGGER steps (type: "trigger") are UNIQUE - they are the ONLY step that starts workflow execution
+  * DO NOT include trigger steps in agent configurations - they don't need agents
+  * Trigger steps are events/schedules that initiate workflows, not actions to execute
+  * When a trigger fires, it automatically starts the workflow - no agent needed
+  
+- END steps (type: "end") are UNIQUE - they are the ONLY step that closes workflow execution
+  * DO NOT include end steps in agent configurations - they don't need agents
+  * End steps are completion markers that terminate workflows, not actions to execute
+  * When an end step is reached, the workflow automatically completes - no agent needed
+
+- ONLY group ACTION and DECISION steps (type: "action" or "decision") into agents
+- Trigger configuration (requirementsText) describes when workflow starts - use this context to understand workflow frequency/pattern
+- End step configuration (requirementsText) describes completion - use this to understand workflow goals
+
+Group ACTION and DECISION steps that:
 - Share similar integrations (e.g., Gmail)
 - Have related actions
 - Can be efficiently handled by the same agent
 
-Return ONLY a valid JSON array of agent configurations:
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON array only:
 [
   {
     "name": "Agent name",
-    "stepIds": ["step1", "step2"],
+    "stepIds": ["step1", "step2"], // Only include action/decision step IDs
     "blueprint": {
       "greenList": ["allowed actions"],
       "redList": ["forbidden actions"]
@@ -623,49 +1094,74 @@ Return ONLY a valid JSON array of agent configurations:
 Workflow:
 ${JSON.stringify(workflowInfo, null, 2)}`
 
-  try {
-    const result = await model.generateContent(prompt)
-    const response = result.response.text()
+  // Retry logic with exponential backoff
+  const maxRetries = 3
+  const baseDelay = 1000 // 1 second
+  let lastError: Error | null = null
 
-    const jsonMatch = response.match(/\[[\s\S]*\]/)
-    if (!jsonMatch) {
-      throw new Error('Failed to parse agent configurations')
-    }
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent(prompt)
+      const response = result.response.text()
 
-    const agentDataArray = JSON.parse(jsonMatch[0])
-
-    const agents: AgentConfiguration[] = agentDataArray.map((agentData: any, index: number) => {
-      // Create agent for first step in group, assign other steps to it
-      const primaryStepId = agentData.stepIds[0]
-
-      return {
-        id: `agent-${Date.now()}-${index}`,
-        name: agentData.name || `Agent ${index + 1}`,
-        stepId: primaryStepId,
-        workflowId: workflow.id,
-        blueprint: agentData.blueprint || { greenList: [], redList: [] },
-        integrations: agentData.integrations || {},
-        status: 'configured',
-        createdAt: new Date(),
+      const jsonMatch = response.match(/\[[\s\S]*\]/)
+      if (!jsonMatch) {
+        throw new Error('Failed to parse agent configurations')
       }
-    })
 
-    const duration = Date.now() - startTime
+      let agentDataArray
+      try {
+        agentDataArray = JSON.parse(jsonMatch[0])
+      } catch (parseError) {
+        throw new Error('Failed to parse agent configurations JSON')
+      }
 
-    // Log agent building complete
-    logAgentBuildingComplete(workflow.id, workerName, agents, duration)
-    console.log(`✅ [Agent Building] Successfully built ${agents.length} agents for workflow "${workflow.name}":`, agents.map(a => a.name).join(', '))
-    console.log(`⏱️ [Agent Building] Took ${duration}ms`)
-    console.log(`📋 [Agent Building] Agent details:`, agents)
+      const agents: AgentConfiguration[] = agentDataArray.map((agentData: any, index: number) => {
+        // Create agent for first step in group, assign other steps to it
+        const primaryStepId = agentData.stepIds[0]
 
-    return agents
-  } catch (error) {
-    console.error('Error building agents:', error)
-    const duration = Date.now() - startTime
-    // Log error in metadata
-    logAgentBuildingComplete(workflow.id, workerName, [], duration)
-    throw new Error('Failed to build agents from workflow requirements')
+        return {
+          id: `agent-${Date.now()}-${index}`,
+          name: agentData.name || `Agent ${index + 1}`,
+          stepId: primaryStepId,
+          workflowId: workflow.id,
+          blueprint: agentData.blueprint || { greenList: [], redList: [] },
+          integrations: agentData.integrations || {},
+          status: 'configured',
+          createdAt: new Date(),
+        }
+      })
+
+      const duration = Date.now() - startTime
+
+      // Log agent building complete
+      logAgentBuildingComplete(workflow.id, workerName, agents, duration)
+      console.log(`✅ [Agent Building] Successfully built ${agents.length} agents for workflow "${workflow.name}":`, agents.map(a => a.name).join(', '))
+      console.log(`⏱️ [Agent Building] Took ${duration}ms`)
+
+      return agents
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+      
+      // If not the last attempt, wait before retrying
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1) // Exponential backoff: 1s, 2s, 4s
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
+    }
   }
+
+  // All retries failed
+  const duration = Date.now() - startTime
+  logAgentBuildingComplete(workflow.id, workerName, [], duration)
+  console.error(`Failed to build agents after ${maxRetries} attempts`)
+  
+  // Provide helpful error message
+  const errorMsg = lastError?.message || 'Unknown error'
+  if (errorMsg.includes('Failed to fetch') || errorMsg.includes('ERR_CONNECTION_CLOSED')) {
+    throw new Error(`Failed to build agents: Network error. Please check your internet connection and API key. Original error: ${errorMsg}`)
+  }
+  throw new Error(`Failed to build agents after ${maxRetries} attempts: ${errorMsg}`)
 }
 
 // Extract agent context
@@ -718,17 +1214,28 @@ export async function extractPeopleFromConversation(
     .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
     .join('\n')
 
-  const prompt = `Extract people/stakeholders mentioned in this conversation.
-Return ONLY a valid JSON array:
+  const prompt = `Extract people/stakeholders mentioned in this conversation. Focus on entities that are involved in the workflow process.
+
+EXTRACTION RULES:
+- Extract people, workers, staff, team members, or digital workers mentioned
+- Include roles/titles if mentioned (e.g., "consultant", "manager", "assistant")
+- Distinguish between human workers and AI/digital workers
+- If someone is mentioned as "my worker", "the worker", "staff member" → type: "human"
+- If mentioned as "AI agent", "digital worker", "automated system" → type: "ai"
+- If unclear, default to "human" for people and "ai" for systems/agents
+- Skip generic references like "customer", "user", "client" unless they're part of the team structure
+- Only extract entities that would be part of the organizational structure
+
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON array only:
 [
   {
-    "name": "Person name",
+    "name": "Person/Entity name",
     "type": "ai|human",
-    "role": "Role/title"
+    "role": "Role/title (optional)"
   }
 ]
 
-If no people are mentioned, return an empty array.
+If no relevant people/stakeholders are mentioned, return an empty array.
 
 Conversation:
 ${conversationText}`
@@ -742,7 +1249,13 @@ ${conversationText}`
       return []
     }
 
-    const people = JSON.parse(jsonMatch[0])
+    let people
+    try {
+      people = JSON.parse(jsonMatch[0])
+    } catch (parseError) {
+      return []
+    }
+
     return people.map((person: any) => ({
       name: person.name,
       type: person.type || 'human',
@@ -753,5 +1266,84 @@ ${conversationText}`
   } catch (error) {
     console.error('Error extracting people:', error)
     return []
+  }
+}
+
+// Parse node creation request from chat message
+export async function parseNodeCreationRequest(
+  userMessage: string,
+  existingNodes: NodeData[]
+): Promise<{
+  name: string
+  type: 'ai' | 'human'
+  role?: string
+  parentName?: string
+} | null> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const existingNodeNames = existingNodes.map((n) => n.name).join(', ')
+
+  const prompt = `Parse this user request to create a new team member/digital worker. Extract the information needed to add them to the organizational chart.
+
+USER REQUEST: "${userMessage}"
+
+EXISTING NODES IN TEAM: ${existingNodeNames || 'None'}
+
+EXTRACTION RULES:
+- Extract the name of the new person/entity
+- Determine if it's a "human" or "ai" (digital worker)
+- Extract role/title if mentioned
+- If user mentions "reports to", "under", "works for", "child of", "belongs to", extract the parent node name
+- If parent is mentioned, match it to one of the existing node names (use closest match)
+- If no parent is mentioned, the new node will be added without a parent (will be a root node)
+
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON only:
+{
+  "name": "Name of the new person/entity",
+  "type": "ai|human",
+  "role": "Role/title (optional)",
+  "parentName": "Name of parent node (optional, only if mentioned)"
+}
+
+If the request is not about creating a team member, return null.
+
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON object or null only, no other text.`
+
+  try {
+    const result = await model.generateContent(prompt)
+    const response = result.response.text()
+
+    // Try to extract JSON
+    const jsonMatch = response.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      return null
+    }
+
+    let parsed
+    try {
+      parsed = JSON.parse(jsonMatch[0])
+    } catch (parseError) {
+      return null
+    }
+    
+    // Validate required fields
+    if (!parsed.name || !parsed.type) {
+      console.warn(`⚠️ [parseNodeCreationRequest] Parsed JSON missing required fields (name or type)`)
+      return null
+    }
+
+    // Validate type
+    if (parsed.type !== 'ai' && parsed.type !== 'human') {
+      parsed.type = 'human' // Default to human
+    }
+
+    return parsed
+  } catch (error) {
+    console.error('Error parsing node creation request:', error)
+    return null
   }
 }

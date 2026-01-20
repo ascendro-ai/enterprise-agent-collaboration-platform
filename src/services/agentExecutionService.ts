@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { GEMINI_CONFIG } from '../utils/constants'
 import { sendEmail, readEmails, getGmailAccessToken } from './gmailService'
+import { getWorkflowById } from './workflowReadinessService'
 import type { WorkflowStep, AgentConfiguration } from '../types'
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY
@@ -41,7 +42,8 @@ export async function executeAgentAction(
   step: WorkflowStep,
   blueprint: { greenList: string[]; redList: string[] },
   guidanceContext?: Array<{ sender: 'user' | 'agent'; text: string; timestamp: Date }>,
-  integrations?: { gmail?: boolean }
+  integrations?: { gmail?: boolean },
+  workflowId?: string
 ): Promise<AgentExecutionResult> {
   if (!genAI) {
     throw new Error('Gemini API key is not configured')
@@ -49,6 +51,23 @@ export async function executeAgentAction(
 
   const model = getModel()
   const hasGmail = integrations?.gmail && (await getGmailAccessToken()) !== null
+
+  // Get workflow context for trace logging
+  let workflowName = 'Unknown Workflow'
+  let digitalWorkerName = 'default'
+  if (workflowId) {
+    const workflow = getWorkflowById(workflowId)
+    if (workflow) {
+      workflowName = workflow.name || workflowId
+      digitalWorkerName = workflow.assignedTo?.stakeholderName || 'default'
+    }
+  }
+  const agentName = step.assignedTo?.agentName || 'unnamed agent'
+
+  // Helper function for trace logging
+  const logAgentTrace = (message: string) => {
+    console.log(`Agent ${agentName} is analyzing step requirements: ${step.label}. The step requires: ${step.requirements?.requirementsText || 'No specific requirements provided'}. ${message}`)
+  }
 
   // Build guidance context text
   const guidanceText = guidanceContext && guidanceContext.length > 0
@@ -74,13 +93,16 @@ AVAILABLE INTEGRATIONS:
 ${guidanceText}
 
 CRITICAL RULES:
-1. You MUST only perform actions that are in the GREEN LIST
-2. You MUST NOT perform any actions in the RED LIST
-3. If you need clarification or guidance, request it using "guidance_requested" action type
-4. If Gmail is available and the step involves email, use Gmail API actions
-5. Be specific with action parameters (to, subject, body for emails)
+1. If this is a TRIGGER step, it's an event - just mark it as complete (use "complete" action type)
+2. For ACTION steps: 
+   - If GREEN LIST is empty AND this is the first execution attempt, request guidance with: "The Green List is empty. I need to know what actions are allowed for this step before I can proceed."
+   - If GREEN LIST has items, you MUST only perform actions that are in the GREEN LIST
+3. You MUST NOT perform any actions in the RED LIST
+4. If you need clarification or guidance, request it using "guidance_requested" action type
+5. If Gmail is available and the step involves email, use Gmail API actions
+6. Be specific with action parameters (to, subject, body for emails)
 
-Return ONLY a valid JSON object with this structure:
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON only with this structure:
 {
   "actions": [
     {
@@ -107,27 +129,41 @@ Think step by step:
 4. Do I have enough information to proceed?
 5. What specific actions should I take?
 
-Return ONLY the JSON object, no other text.`
+Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON object only, no other text.`
 
   try {
-    console.log(`🤖 [Agent Execution] Calling LLM for step "${step.label}"...`)
-    const result = await model.generateContent(prompt)
+    logAgentTrace('Starting to analyze what actions to take')
+    
+    // Add timeout to prevent indefinite hangs
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`executeAgentAction timed out after 30000ms`))
+      }, 30000)
+    })
+    
+    const result = await Promise.race([
+      model.generateContent(prompt),
+      timeoutPromise
+    ])
     const response = result.response.text()
 
-    // Extract JSON from response
-    const jsonMatch = response.match(/\{[\s\S]*\}/)
+    // Extract JSON from plaintext response
+    const jsonMatch = response.trim().match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
-      throw new Error('Failed to parse agent execution response')
+      throw new Error('Failed to parse agent execution response: No JSON found')
     }
 
-    const executionData = JSON.parse(jsonMatch[0])
+    let executionData
+    try {
+      executionData = JSON.parse(jsonMatch[0])
+    } catch (parseError) {
+      throw new Error('Failed to parse agent execution response: Invalid JSON')
+    }
 
     // Validate actions
     if (!Array.isArray(executionData.actions)) {
       throw new Error('Invalid actions array in agent response')
     }
-
-    console.log(`📋 [Agent Execution] LLM decided on ${executionData.actions.length} action(s):`, executionData.actions)
 
     // Execute actions
     const executedActions: AgentAction[] = []
@@ -137,10 +173,9 @@ Return ONLY the JSON object, no other text.`
       try {
         await executeSingleAction(action, hasGmail)
         executedActions.push(action)
-        console.log(`✅ [Agent Execution] Executed action: ${action.type}`)
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
-        console.error(`❌ [Agent Execution] Error executing action ${action.type}:`, errorMessage)
+        console.error(`Error executing action ${action.type}:`, errorMessage)
         lastError = errorMessage
         
         // If it's a guidance request, don't fail - just return it

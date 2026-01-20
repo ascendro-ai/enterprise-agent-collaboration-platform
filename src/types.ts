@@ -67,6 +67,7 @@ export interface NodeData {
   role?: string
   status?: 'active' | 'inactive' | 'needs_attention'
   assignedWorkflows?: string[] // Array of workflow IDs
+  parentName?: string // Name of parent node (for building hierarchy)
   children?: NodeData[]
 }
 
@@ -112,7 +113,7 @@ export interface ReviewItem {
     payload: unknown
   }
   timestamp: Date
-  chatHistory?: Array<{ sender: 'user' | 'agent'; text: string; timestamp: Date }>
+  chatHistory?: Array<{ sender: 'user' | 'agent' | 'system'; text: string; timestamp: Date }>
   needsGuidance?: boolean // Flag to indicate if agent is requesting guidance
 }
 

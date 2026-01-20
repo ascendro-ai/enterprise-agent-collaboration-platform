@@ -97,8 +97,10 @@ function getTypeLabel(type: string): string {
 
 // Check step status for badge display
 function getStepStatus(step: WorkflowStep): 'needs-attention' | 'complete' | null {
-  // Only show badges for action steps assigned to AI
-  if (step.type === 'trigger' || step.type === 'end') return null
+  // Show badges for trigger/end steps based on configuration status
+  if (step.type === 'trigger' || step.type === 'end') {
+    return step.requirements?.isComplete ? 'complete' : 'needs-attention'
+  }
   
   // Only show badges for AI-assigned steps
   if (step.assignedTo?.type !== 'ai') return null

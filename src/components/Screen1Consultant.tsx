@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Send, Plus, Mic, ArrowLeft, Upload, Mail } from 'lucide-react'
 import { useWorkflows } from '../contexts/WorkflowContext'
-import { consultWorkflow, extractWorkflowFromConversation } from '../services/geminiService'
+import { useTeam } from '../contexts/TeamContext'
+import { consultWorkflow, extractWorkflowFromConversation, extractPeopleFromConversation } from '../services/geminiService'
 import { initiateGmailAuth, isGmailAuthenticated } from '../services/gmailService'
 import { GEMINI_CONFIG } from '../utils/constants'
 import type { ConversationMessage, ConversationSession } from '../types'
@@ -17,6 +18,7 @@ import {
 
 export default function Screen1Consultant() {
   const { addWorkflow, addConversation, updateConversation, conversations } = useWorkflows()
+  const { addNode, team } = useTeam()
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -99,6 +101,24 @@ export default function Screen1Consultant() {
             // Update the workflow (this will update if exists, add if new)
             addWorkflow(workflow)
             
+            // Extract and add team nodes automatically (only human workers)
+            try {
+              const extractedPeople = await extractPeopleFromConversation(conversationHistory)
+              // Filter to only add human workers (exclude digital workers/AI agents)
+              const humanWorkers = extractedPeople.filter((person) => person.type === 'human')
+              humanWorkers.forEach((person) => {
+                // Only add if node doesn't already exist
+                const exists = team.some((n) => n.name.toLowerCase() === person.name.toLowerCase())
+                if (!exists) {
+                  addNode(person)
+                  console.log(`✅ [Auto Node Creation] Added human worker "${person.name}" to team`)
+                }
+              })
+            } catch (error) {
+              console.error('Error extracting people from conversation:', error)
+              // Silent fail - don't interrupt workflow extraction
+            }
+            
             // Link conversation to workflow (only once)
             if (sessionId && !currentWorkflowId) {
               const session = conversations.find((c) => c.id === sessionId)
@@ -120,7 +140,7 @@ export default function Screen1Consultant() {
         }
       }
     }, 500) // 500ms debounce
-  }, [addWorkflow, sessionId, conversations, updateConversation, getWorkflowIdForSession, currentWorkflowId])
+  }, [addWorkflow, sessionId, conversations, updateConversation, getWorkflowIdForSession, currentWorkflowId, addNode, team])
 
   const handleSend = async () => {
     if (!inputValue.trim() || isLoading) return
@@ -174,9 +194,11 @@ export default function Screen1Consultant() {
       extractWorkflow(updatedMessages)
     } catch (error) {
       console.error('Error getting consultant response:', error)
+      const errorDetails = error instanceof Error ? error.message : String(error)
+      console.error('Full error details:', error)
       const errorMessage: ConversationMessage = {
         sender: 'system',
-        text: 'Sorry, I encountered an error. Please try again.',
+        text: `Sorry, I encountered an error: ${errorDetails}. Please try again.`,
         timestamp: new Date(),
       }
       setMessages([...newMessages, errorMessage])
@@ -244,9 +266,11 @@ export default function Screen1Consultant() {
       extractWorkflow(updatedMessages)
     } catch (error) {
       console.error('Error getting consultant response:', error)
+      const errorDetails = error instanceof Error ? error.message : String(error)
+      console.error('Full error details:', error)
       const errorMessage: ConversationMessage = {
         sender: 'system',
-        text: 'Sorry, I encountered an error. Please try again.',
+        text: `Sorry, I encountered an error: ${errorDetails}. Please try again.`,
         timestamp: new Date(),
       }
       setMessages([...newMessages, errorMessage])

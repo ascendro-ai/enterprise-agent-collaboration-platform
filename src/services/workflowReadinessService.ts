@@ -63,9 +63,12 @@ export function checkWorkflowReadiness(workflowId: string): {
   }
 
   // Check if all steps have complete requirements
+  // Trigger and end steps need configuration (isComplete flag)
+  // Action/decision steps need full requirements gathering
   const stepsWithoutRequirements = workflow.steps.filter((step) => {
     if (step.type === 'trigger' || step.type === 'end') {
-      return false // These don't need requirements
+      // Trigger and end steps need to be configured
+      return !step.requirements?.isComplete
     }
     return !validation.areRequirementsComplete(step)
   })

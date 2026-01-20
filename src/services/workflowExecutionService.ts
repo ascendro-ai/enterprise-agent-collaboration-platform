@@ -26,6 +26,20 @@ interface ExecutionState {
 
 const executionStates = new Map<string, ExecutionState>()
 
+// Trace logging function for narrative workflow execution logs
+function logTrace(workflowId: string, message: string): void {
+  const workflow = getWorkflowById(workflowId)
+  if (!workflow) {
+    console.log(`[Trace] ${message}`)
+    return
+  }
+  
+  const digitalWorkerName = workflow.assignedTo?.stakeholderName || 'default'
+  const workflowName = workflow.name || workflowId
+  
+  console.log(`Digital Worker ${digitalWorkerName} is executing workflow ${workflowName}. ${message}`)
+}
+
 // Start workflow execution
 export function startWorkflowExecution(workflowId: string, digitalWorkerName?: string): void {
   console.log(`🚀 [Workflow Execution] Starting execution for workflow "${workflowId}" (digital worker: ${digitalWorkerName || 'default'})`)
@@ -73,6 +87,9 @@ export function startWorkflowExecution(workflowId: string, digitalWorkerName?: s
     workflow.steps.length
   )
 
+  // Trace log: workflow execution start
+  logTrace(workflowId, `Starting execution of workflow with ${workflow.steps.length} steps`)
+
   // Emit start event
   emitControlRoomUpdate({
     type: 'workflow_update',
@@ -109,18 +126,38 @@ async function executeWorkflowSteps(workflowId: string): Promise<void> {
   if (state.currentStepIndex >= workflow.steps.length) {
     // Workflow completed
     console.log(`✅ [Workflow Execution] Workflow "${workflow.name}" completed!`)
+    logTrace(workflowId, `Has successfully completed workflow`)
     completeWorkflow(workflowId, workflow)
     return
   }
 
   const step = workflow.steps[state.currentStepIndex]
+  const stepNumber = state.currentStepIndex + 1
+  const totalSteps = workflow.steps.length
+  const assignedTo = step.assignedTo?.type === 'ai' 
+    ? `AI agent ${step.assignedTo.agentName || 'unnamed'}`
+    : step.assignedTo?.type === 'human'
+    ? 'Human worker'
+    : 'unassigned'
+  
   console.log(`▶️ [Workflow Execution] Executing step: "${step.label}" (${step.type}, assigned to: ${step.assignedTo?.type || 'none'})`)
+  logTrace(workflowId, `Preparing to execute step ${stepNumber} of ${totalSteps}: ${step.label}`)
+  logTrace(workflowId, `Now executing step ${step.label}. This step is assigned to ${assignedTo}`)
 
   try {
     // Execute the step
     await executeAgentStep(workflowId, step)
     
+    // Check if execution was paused (state might have been set to not running)
+    const currentState = executionStates.get(workflowId)
+    if (!currentState || !currentState.isRunning) {
+      console.log(`⏸️ [Workflow Execution] Execution paused for step "${step.label}"`)
+      return // Don't continue if execution was paused
+    }
+    
     console.log(`✅ [Workflow Execution] Step "${step.label}" completed successfully`)
+    logTrace(workflowId, `Successfully completed step ${step.label}`)
+    logTrace(workflowId, `Moving to the next step in the workflow`)
 
     // Move to next step
     state.currentStepIndex++
@@ -132,10 +169,16 @@ async function executeWorkflowSteps(workflowId: string): Promise<void> {
       executeWorkflowSteps(workflowId)
     }, 1000) // Small delay between steps
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    if (errorMessage === 'EXECUTION_PAUSED_FOR_GUIDANCE') {
+      // Execution paused for guidance - this is expected, don't log as error
+      console.log(`⏸️ [Workflow Execution] Execution paused for guidance on step "${step.label}"`)
+      return
+    }
     console.error(`❌ [Workflow Execution] Error executing step "${step.label}":`, error)
+    logTrace(workflowId, `Encountered an error while executing step ${step.label}: ${errorMessage}`)
     const workflow = getWorkflowById(workflowId)
     const digitalWorkerName = workflow?.assignedTo?.stakeholderName || 'default'
-    const errorMessage = error instanceof Error ? error.message : String(error)
     
     // Log the error
     logErrorOrBlocker(
@@ -225,6 +268,23 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
     return
   }
 
+  // Skip blueprint validation for trigger steps (they're events, not actions)
+  if (step.type === 'trigger') {
+    console.log(`⏭️ [Agent Execution] Trigger step (event): ${step.label} - marking as complete`)
+    const stepDuration = Date.now() - stepStartTime
+    logWorkflowStepComplete(workflowId, step.id, step.label, digitalWorkerName, stepDuration)
+    emitControlRoomUpdate({
+      type: 'workflow_update',
+      data: {
+        workflowId,
+        stepId: step.id,
+        message: `Trigger step completed: ${step.label}`,
+        timestamp: new Date(),
+      },
+    })
+    return
+  }
+
   // Get blueprint from step requirements
   const blueprint = step.requirements?.blueprint || { greenList: [], redList: [] }
   
@@ -243,7 +303,8 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
       step,
       blueprint,
       guidanceContext,
-      integrations
+      integrations,
+      workflowId
     )
 
     const stepDuration = Date.now() - stepStartTime
@@ -254,6 +315,8 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
     // Check if agent needs guidance
     if (result.needsGuidance) {
       console.log(`💬 [Agent Execution] Agent requested guidance: ${result.guidanceQuestion}`)
+      const guidanceQuestion = result.guidanceQuestion || `Agent needs guidance for step: ${step.label}`
+      logTrace(workflowId, `Is requesting guidance for step ${step.label}. The agent needs to know: ${guidanceQuestion}`)
       
       // Stop execution and request guidance
       if (state) {
@@ -271,14 +334,14 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
             type: 'guidance_requested',
             payload: {
               step: step.label,
-              message: result.guidanceQuestion || `Agent needs guidance for step: ${step.label}`,
+              message: guidanceQuestion,
               needsGuidance: true,
             },
           },
           timestamp: new Date(),
         },
       })
-      return // Don't continue until guidance is provided
+      throw new Error('EXECUTION_PAUSED_FOR_GUIDANCE') // Throw error instead of returning
     }
 
     // Check if step requires review (decision steps or steps with blueprint that need approval)
@@ -364,6 +427,12 @@ function completeWorkflow(workflowId: string, workflow: Workflow): void {
     ? Date.now() - state.startTime.getTime()
     : 0
 
+  // Get end step configuration message if available
+  const endStep = workflow.steps.find((s) => s.type === 'end')
+  const completionMessage = endStep?.requirements?.requirementsText 
+    ? endStep.requirements.requirementsText 
+    : `Workflow "${workflow.name}" completed`
+
   // Log workflow completion
   logWorkflowComplete(workflowId, digitalWorkerName, totalDuration, workflow.steps.length)
 
@@ -374,7 +443,7 @@ function completeWorkflow(workflowId: string, workflow: Workflow): void {
     data: {
       workflowId,
       digitalWorkerName,
-      message: `Workflow "${workflow.name}" completed`,
+      message: completionMessage,
       timestamp: new Date(),
     },
   })
@@ -422,6 +491,7 @@ export function approveReviewItem(reviewItem: ReviewItem): void {
 
   const state = executionStates.get(reviewItem.workflowId)
   const isError = reviewItem.action.type === 'error'
+  const isGuidance = reviewItem.action.type === 'guidance_requested' // Add this check
 
   // Store chat history/guidance in execution state for agent to use
   if (reviewItem.chatHistory && reviewItem.chatHistory.length > 0 && state) {
@@ -437,16 +507,16 @@ export function approveReviewItem(reviewItem: ReviewItem): void {
     executionStates.set(reviewItem.workflowId, state)
   }
 
-  if (isError && state) {
-    // For errors, retry the current step (don't increment)
+  if ((isError || isGuidance) && state) {
+    // For errors or guidance, retry the current step (don't increment)
     // Reset the step start time if it exists
     if (state.stepStartTimes) {
       state.stepStartTimes.delete(reviewItem.stepId)
     }
-    // Restart execution (set isRunning back to true for retry)
+    // Restart execution (set isRunning back to true)
     state.isRunning = true
     executionStates.set(reviewItem.workflowId, state)
-    // Continue execution from current step (retry)
+    // Continue execution from current step (retry/continue with guidance)
     executeWorkflowSteps(reviewItem.workflowId)
   } else if (state && state.isRunning) {
     // For approval_required, continue to next step
@@ -459,7 +529,11 @@ export function approveReviewItem(reviewItem: ReviewItem): void {
     data: {
       workflowId: reviewItem.workflowId,
       stepId: reviewItem.stepId,
-      message: isError ? `Retrying step after error` : `Approved: ${reviewItem.action.type}`,
+      message: isError 
+        ? `Retrying step after error` 
+        : isGuidance 
+        ? `Guidance provided for step`
+        : `Approved: ${reviewItem.action.type}`,
       timestamp: new Date(),
     },
   })
