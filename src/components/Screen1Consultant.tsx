@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, Plus, Mic, ArrowLeft, Upload, Mail, Image as ImageIcon, XCircle } from 'lucide-react'
+import { Send, Plus, Mic, Upload, Mail, Image as ImageIcon, XCircle } from 'lucide-react'
 import { useWorkflows } from '../contexts/WorkflowContext'
 import { consultWorkflow, extractWorkflowFromConversation } from '../services/geminiService'
 import { initiateGmailAuth, isGmailAuthenticated } from '../services/gmailService'
@@ -377,17 +377,6 @@ export default function Screen1Consultant() {
 
   return (
     <div className="flex flex-col h-screen bg-white">
-      {/* Header */}
-      <div className="flex items-center gap-4 p-6 border-b border-gray-lighter">
-        <button className="p-2 hover:bg-gray-lighter rounded-md">
-          <ArrowLeft className="h-5 w-5 text-gray-darker" />
-        </button>
-        <div>
-          <div className="text-sm text-gray-darker">Workflow Architect</div>
-          <div className="text-xs text-gray-darker">New Session</div>
-        </div>
-      </div>
-
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {messages.length === 0 ? (

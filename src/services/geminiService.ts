@@ -10,6 +10,7 @@ import type {
   AgentConfiguration,
   ConversationMessage,
   NodeData,
+  Team,
 } from '../types'
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY
@@ -1496,5 +1497,175 @@ Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any 
   } catch (error) {
     console.error('Error parsing node creation request:', error)
     return null
+  }
+}
+
+// Organization Setup Chat - Guide user through setting up teams and digital workers
+export interface OrgSetupData {
+  employees?: string[]
+  teams?: Team[]
+  isComplete?: boolean
+}
+
+export async function organizationSetupChat(
+  messages: ConversationMessage[],
+  currentData: { employees: string[]; teams: Team[] }
+): Promise<{ response: string; extractedData?: OrgSetupData }> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const conversationText = messages
+    .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+    .join('\n')
+
+  const currentEmployeesText = currentData.employees.length > 0
+    ? `\nCurrently collected employees: ${currentData.employees.join(', ')}`
+    : ''
+  const currentTeamsText = currentData.teams.length > 0
+    ? `\nCurrently defined teams:\n${currentData.teams.map(t => `- ${t.name}: ${t.members.join(', ')} (manager: ${t.managerId || 'not assigned'})`).join('\n')}`
+    : ''
+
+  const prompt = `You are an Organization Setup Assistant. Your job is to guide the user through setting up their organization structure through natural conversation.
+
+CURRENT STATE:
+${currentEmployeesText}
+${currentTeamsText}
+
+CONVERSATION HISTORY:
+${conversationText}
+
+YOUR GOAL:
+1. Collect employee names (people the user works with)
+2. Help user organize them into teams (user can name teams however they like - be flexible)
+3. Identify who manages each team
+4. Once all teams have managers assigned, indicate setup is complete
+
+CONVERSATION STYLE:
+- Be friendly and conversational
+- Ask one question at a time
+- If user lists employees, acknowledge and ask about team organization
+- If user mentions teams, ask who manages each team
+- Be flexible with team names - don't force department names
+
+EXTRACTION RULES:
+After each user message, extract:
+- New employee names mentioned
+- Team names and their members
+- Manager assignments for teams
+
+RESPONSE FORMAT:
+Return JSON with:
+{
+  "response": "Your conversational response to the user",
+  "extractedData": {
+    "employees": ["name1", "name2", ...], // All employees mentioned so far
+    "teams": [
+      {
+        "id": "team-1",
+        "name": "Team Name",
+        "members": ["employee1", "employee2"],
+        "managerId": "manager name" // Who manages this team
+      }
+    ],
+    "isComplete": true/false // true when all teams have managers assigned
+  }
+}
+
+IMPORTANT:
+- Only extract data that the user has explicitly mentioned
+- Don't make up team names or managers
+- If user says "I manage X" or "X manages Y", extract that relationship
+- isComplete should be true only when user has defined teams AND assigned managers to all teams
+- Generate unique IDs for teams (e.g., "team-1", "team-2")
+
+Return ONLY valid JSON, no markdown code blocks.`
+
+  try {
+    const result = await model.generateContent(prompt)
+    const responseText = result.response.text().trim()
+
+    // Parse JSON response
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      return { response: responseText }
+    }
+
+    const parsed = JSON.parse(jsonMatch[0])
+
+    return {
+      response: parsed.response || responseText,
+      extractedData: parsed.extractedData,
+    }
+  } catch (error) {
+    console.error('Error in organization setup chat:', error)
+    throw new Error(`Failed to process organization setup: ${error instanceof Error ? error.message : 'Unknown error'}`)
+  }
+}
+
+// Provide feedback on completed task
+export async function provideFeedbackOnCompletion(
+  workflowId: string,
+  completionMessage: string,
+  userFeedback: string,
+  conversationHistory: ConversationMessage[] = []
+): Promise<{ response: string; shouldRerun: boolean }> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+
+  const conversationText = conversationHistory
+    .map((msg) => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+    .join('\n')
+
+  const prompt = `You are an AI assistant helping review completed workflow outputs. The user is providing feedback on a completed task.
+
+WORKFLOW ID: ${workflowId}
+
+COMPLETED TASK OUTPUT:
+${completionMessage}
+
+PREVIOUS FEEDBACK CONVERSATION:
+${conversationText || 'No previous feedback'}
+
+USER FEEDBACK:
+${userFeedback}
+
+INSTRUCTIONS:
+1. Acknowledge the user's feedback
+2. Determine if changes are needed
+3. If changes are needed, explain what should be modified
+4. If the feedback is just a question or clarification, answer it
+
+RESPONSE FORMAT:
+Return JSON:
+{
+  "response": "Your conversational response",
+  "shouldRerun": true/false // true if workflow should be re-executed with changes
+}
+
+Return ONLY valid JSON, no markdown code blocks.`
+
+  try {
+    const result = await model.generateContent(prompt)
+    const responseText = result.response.text().trim()
+
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      return { response: responseText, shouldRerun: false }
+    }
+
+    const parsed = JSON.parse(jsonMatch[0])
+    return {
+      response: parsed.response || responseText,
+      shouldRerun: parsed.shouldRerun || false,
+    }
+  } catch (error) {
+    console.error('Error providing feedback:', error)
+    throw new Error(`Failed to process feedback: ${error instanceof Error ? error.message : 'Unknown error'}`)
   }
 }

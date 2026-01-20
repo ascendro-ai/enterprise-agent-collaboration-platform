@@ -1,11 +1,17 @@
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react'
 import { storage } from '../utils/storage'
 import { WORKFLOW_CONFIG } from '../utils/constants'
-import type { NodeData } from '../types'
+import type { NodeData, Team } from '../types'
 
 interface TeamContextType {
   team: NodeData[]
+  teams: Team[]
+  isOrganizationSetup: boolean
   setTeam: (team: NodeData[]) => void
+  setTeams: (teams: Team[]) => void
+  addTeam: (team: Team) => void
+  updateTeam: (teamId: string, updates: Partial<Team>) => void
+  setOrganizationSetup: (isSetup: boolean) => void
   addNode: (node: NodeData) => void
   updateNode: (name: string, updates: Partial<NodeData>) => void
   toggleNodeStatus: (name: string) => void
@@ -26,6 +32,8 @@ const defaultDigitalWorker: NodeData = {
 
 export function TeamProvider({ children }: { children: ReactNode }) {
   const [team, setTeamState] = useState<NodeData[]>([])
+  const [teams, setTeamsState] = useState<Team[]>([])
+  const [isOrganizationSetup, setIsOrganizationSetupState] = useState<boolean>(false)
 
   // Define ensureDefaultDigitalWorker first so it can be used in useEffect
   const ensureDefaultDigitalWorker = useCallback(() => {
@@ -43,6 +51,9 @@ export function TeamProvider({ children }: { children: ReactNode }) {
   // Load from localStorage on mount
   useEffect(() => {
     const savedTeam = storage.getTeam()
+    const savedTeams = storage.getTeams()
+    const savedOrgSetup = storage.getOrganizationSetup()
+    
     if (savedTeam.length === 0) {
       // Initialize with default digital worker
       setTeamState([defaultDigitalWorker])
@@ -52,12 +63,28 @@ export function TeamProvider({ children }: { children: ReactNode }) {
       // Ensure default digital worker exists
       ensureDefaultDigitalWorker()
     }
+    
+    if (savedTeams) {
+      setTeamsState(savedTeams)
+    }
+    
+    setIsOrganizationSetupState(savedOrgSetup || false)
   }, [ensureDefaultDigitalWorker])
 
   // Save to localStorage whenever team changes
   useEffect(() => {
     storage.saveTeam(team)
   }, [team])
+
+  // Save to localStorage whenever teams change
+  useEffect(() => {
+    storage.saveTeams(teams)
+  }, [teams])
+
+  // Save to localStorage whenever organization setup status changes
+  useEffect(() => {
+    storage.saveOrganizationSetup(isOrganizationSetup)
+  }, [isOrganizationSetup])
 
   const setTeam = useCallback((newTeam: NodeData[]) => {
     setTeamState(newTeam)
@@ -132,11 +159,41 @@ export function TeamProvider({ children }: { children: ReactNode }) {
     )
   }, [team])
 
+  const setTeams = useCallback((newTeams: Team[]) => {
+    setTeamsState(newTeams)
+  }, [])
+
+  const addTeam = useCallback((newTeam: Team) => {
+    setTeamsState((prev) => {
+      // Check if team already exists
+      if (prev.some((t) => t.id === newTeam.id)) {
+        return prev
+      }
+      return [...prev, newTeam]
+    })
+  }, [])
+
+  const updateTeam = useCallback((teamId: string, updates: Partial<Team>) => {
+    setTeamsState((prev) =>
+      prev.map((t) => (t.id === teamId ? { ...t, ...updates } : t))
+    )
+  }, [])
+
+  const setOrganizationSetup = useCallback((isSetup: boolean) => {
+    setIsOrganizationSetupState(isSetup)
+  }, [])
+
   return (
     <TeamContext.Provider
       value={{
         team,
+        teams,
+        isOrganizationSetup,
         setTeam,
+        setTeams,
+        addTeam,
+        updateTeam,
+        setOrganizationSetup,
         addNode,
         updateNode,
         toggleNodeStatus,

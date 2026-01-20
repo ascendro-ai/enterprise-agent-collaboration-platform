@@ -1,16 +1,19 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { AppProvider, useApp } from './contexts/AppContext'
 import { WorkflowProvider } from './contexts/WorkflowContext'
-import { TeamProvider } from './contexts/TeamContext'
+import { TeamProvider, useTeam } from './contexts/TeamContext'
 import Sidebar from './components/Sidebar'
 import Screen1Consultant from './components/Screen1Consultant'
 import Screen2OrgChart from './components/Screen2OrgChart'
 import Screen3Workflows from './components/Screen3Workflows'
 import Screen4ControlRoom from './components/Screen4ControlRoom'
+import OrganizationSetup from './components/OrganizationSetup'
 import { handleGmailCallback } from './services/gmailService'
 
 function AppContent() {
-  const { activeTab, user } = useApp()
+  const { activeTab, user, setActiveTab } = useApp()
+  const { isOrganizationSetup } = useTeam()
+  const [showOrgSetup, setShowOrgSetup] = useState(false)
 
   // Handle Gmail OAuth callback
   useEffect(() => {
@@ -34,6 +37,20 @@ function AppContent() {
     }
   }, [])
 
+  // Check if organization setup is needed
+  useEffect(() => {
+    if (activeTab === 'create-task' && !isOrganizationSetup) {
+      setShowOrgSetup(true)
+    } else {
+      setShowOrgSetup(false)
+    }
+  }, [activeTab, isOrganizationSetup])
+
+  const handleOrgSetupComplete = () => {
+    setShowOrgSetup(false)
+    // User can now proceed to Create a Task
+  }
+
   const renderScreen = () => {
     switch (activeTab) {
       case 'create-task':
@@ -52,7 +69,11 @@ function AppContent() {
   return (
     <div className="flex h-screen bg-white">
       <Sidebar user={user} />
-      <div className="flex-1 overflow-hidden">{renderScreen()}</div>
+      <div className="flex-1 overflow-hidden relative">
+        {renderScreen()}
+        {/* Organization Setup Overlay */}
+        {showOrgSetup && <OrganizationSetup onComplete={handleOrgSetupComplete} />}
+      </div>
     </div>
   )
 }

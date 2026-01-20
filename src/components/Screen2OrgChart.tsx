@@ -33,7 +33,8 @@ function getInitials(name: string): string {
 }
 
 export default function Screen2OrgChart() {
-  const { team, toggleNodeStatus, assignWorkflowToNode, ensureDefaultDigitalWorker, addNode } = useTeam()
+  const { team, teams, toggleNodeStatus, assignWorkflowToNode, ensureDefaultDigitalWorker, addNode } = useTeam()
+  const [selectedTeamFilter, setSelectedTeamFilter] = useState<string>('all')
   const { workflows, activateWorkflow } = useWorkflows()
   const { user } = useApp()
   const svgRef = useRef<SVGSVGElement>(null)
@@ -176,6 +177,11 @@ export default function Screen2OrgChart() {
   }
 
   // Helper function to build hierarchical tree structure from flat team array
+  // Filter team based on selected team filter
+  const filteredTeam = selectedTeamFilter === 'all'
+    ? team
+    : team.filter(node => node.teamId === selectedTeamFilter)
+
   const buildHierarchy = (flatTeam: NodeData[], userName: string): NodeData => {
     // Create a map for quick lookup
     const nodeMap = new Map<string, NodeData>()
@@ -226,7 +232,7 @@ export default function Screen2OrgChart() {
 
   // Build D3 org chart
   useEffect(() => {
-    if (!svgRef.current || team.length === 0) return
+    if (!svgRef.current || filteredTeam.length === 0) return
 
     // Clear previous render
     d3.select(svgRef.current).selectAll('*').remove()
@@ -236,7 +242,7 @@ export default function Screen2OrgChart() {
 
     // Build hierarchical structure from flat team array
     const userName = user?.name || 'Chitra M.'
-    const userNode = buildHierarchy(team, userName)
+    const userNode = buildHierarchy(filteredTeam, userName)
 
     // Create hierarchical data structure with user at root
     const rootData: any = userNode
@@ -467,7 +473,7 @@ export default function Screen2OrgChart() {
         .attr('fill', '#FFFFFF')
         .text('Inactive')
     })
-  }, [team, user])
+  }, [filteredTeam, user, selectedTeamFilter])
 
   // Show all workflows, not just active ones
   const availableWorkflows = workflows
@@ -735,10 +741,30 @@ export default function Screen2OrgChart() {
     <div className="flex flex-col h-screen bg-gray-light">
       {/* Header */}
       <div className="p-6 bg-white border-b border-gray-lighter">
-        <h1 className="text-2xl font-semibold text-gray-dark mb-2">Your Team</h1>
-        <p className="text-sm text-gray-darker">
-          Drag canvas to pan • Click digital workers to assign workflows
-        </p>
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <h1 className="text-2xl font-semibold text-gray-dark mb-2">Your Team</h1>
+            <p className="text-sm text-gray-darker">
+              Drag canvas to pan • Click digital workers to assign workflows
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <label htmlFor="team-filter" className="text-sm text-gray-darker">Filter:</label>
+            <select
+              id="team-filter"
+              value={selectedTeamFilter}
+              onChange={(e) => setSelectedTeamFilter(e.target.value)}
+              className="px-3 py-1.5 border border-gray-lighter rounded-md text-sm text-gray-dark bg-white focus:outline-none focus:ring-2 focus:ring-gray-dark focus:border-transparent"
+            >
+              <option value="all">All</option>
+              {teams.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Canvas Area */}

@@ -62,6 +62,15 @@ export interface AgentConfiguration {
   createdAt: Date
 }
 
+// Team Types
+export interface Team {
+  id: string
+  name: string // User-defined name (flexible)
+  members: string[] // Employee names
+  managerId?: string // Who the team reports to (name of manager)
+  digitalWorkerId?: string // ID of digital worker assigned to this team
+}
+
 // Org Chart Types
 export interface NodeData {
   name: string
@@ -71,6 +80,7 @@ export interface NodeData {
   assignedWorkflows?: string[] // Array of workflow IDs
   parentName?: string // Name of parent node (for building hierarchy)
   children?: NodeData[]
+  teamId?: string // Link to team if this is a digital worker
 }
 
 // Conversation Types
@@ -133,6 +143,7 @@ export interface CompletedItem {
   digitalWorkerName: string
   goal: string
   timestamp: Date
+  feedbackHistory?: ConversationMessage[]
 }
 
 // Gmail Types

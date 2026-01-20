@@ -3,20 +3,24 @@ import { Eye, AlertCircle, Clock, CheckCircle, XCircle, MessageSquare, Send, Upl
 import { CONTROL_ROOM_EVENT } from '../utils/constants'
 import { useTeam } from '../contexts/TeamContext'
 import { approveReviewItem, rejectReviewItem, provideGuidanceToReviewItem } from '../services/workflowExecutionService'
+import { provideFeedbackOnCompletion } from '../services/geminiService'
 import { parseExcelFile, isExcelFile } from '../services/excelService'
 import { FileUploadChips } from './ui/FileUploadChips'
-import type { ControlRoomUpdate, ReviewItem, CompletedItem, NodeData } from '../types'
+import type { ControlRoomUpdate, ReviewItem, CompletedItem, NodeData, ConversationMessage } from '../types'
 import Card from './ui/Card'
 import Button from './ui/Button'
 import Input from './ui/Input'
 
 export default function Screen4ControlRoom() {
-  const { team } = useTeam()
+  const { team, teams } = useTeam()
+  const [selectedTeam, setSelectedTeam] = useState<string>('all')
   const [watchingItems, setWatchingItems] = useState<Array<{ id: string; name: string; workflow: string }>>([])
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([])
   const [completedItems, setCompletedItems] = useState<CompletedItem[]>([])
   const [expandedChatId, setExpandedChatId] = useState<string | null>(null)
+  const [expandedFeedbackId, setExpandedFeedbackId] = useState<string | null>(null)
   const [chatMessages, setChatMessages] = useState<Record<string, string>>({})
+  const [feedbackMessages, setFeedbackMessages] = useState<Record<string, string>>({})
   const [uploadedFiles, setUploadedFiles] = useState<Record<string, File[]>>({})
   const [showFileMenu, setShowFileMenu] = useState<Record<string, boolean>>({})
   const [uploadingFiles, setUploadingFiles] = useState<Record<string, boolean>>({})
@@ -425,11 +429,54 @@ export default function Screen4ControlRoom() {
     }
   }, [showFileMenu])
 
+  // Filter items by selected team
+  const filteredWatchingItems = selectedTeam === 'all'
+    ? watchingItems
+    : watchingItems.filter(item => {
+        // Find which team this digital worker belongs to
+        const workerNode = team.find(n => n.name === item.name)
+        return workerNode?.teamId === selectedTeam
+      })
+
+  const filteredReviewItems = selectedTeam === 'all'
+    ? reviewItems
+    : reviewItems.filter(item => {
+        // Find which team this digital worker belongs to
+        const workerNode = team.find(n => n.name === item.digitalWorkerName)
+        return workerNode?.teamId === selectedTeam
+      })
+
+  const filteredCompletedItems = selectedTeam === 'all'
+    ? completedItems
+    : completedItems.filter(item => {
+        // Find which team this digital worker belongs to
+        const workerNode = team.find(n => n.name === item.digitalWorkerName)
+        return workerNode?.teamId === selectedTeam
+      })
+
   return (
     <div className="flex flex-col h-screen bg-white">
       {/* Header */}
       <div className="p-6 border-b border-gray-lighter">
-        <h1 className="text-2xl font-semibold text-gray-dark">Operation Control Room</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold text-gray-dark">Operation Control Room</h1>
+          <div className="flex items-center gap-2">
+            <label htmlFor="team-selector" className="text-sm text-gray-darker">Team:</label>
+            <select
+              id="team-selector"
+              value={selectedTeam}
+              onChange={(e) => setSelectedTeam(e.target.value)}
+              className="px-3 py-1.5 border border-gray-lighter rounded-md text-sm text-gray-dark bg-white focus:outline-none focus:ring-2 focus:ring-gray-dark focus:border-transparent"
+            >
+              <option value="all">All Teams</option>
+              {teams.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Kanban Board */}
@@ -441,18 +488,18 @@ export default function Screen4ControlRoom() {
               <Eye className="h-5 w-5 text-gray-darker" />
               <h2 className="text-lg font-semibold text-gray-dark">Active Digital Workers</h2>
               <span className="px-2 py-1 bg-gray-lighter rounded-full text-xs text-gray-darker">
-                {watchingItems.length}
+                {filteredWatchingItems.length}
               </span>
             </div>
             <div className="flex-1 overflow-y-auto space-y-3">
-              {watchingItems.length === 0 ? (
+              {filteredWatchingItems.length === 0 ? (
                 <Card variant="outlined" className="p-8 text-center border-dashed">
                   <p className="text-sm text-gray-darker">
                     No active digital workers
                   </p>
                 </Card>
               ) : (
-                watchingItems.map((item) => {
+                filteredWatchingItems.map((item) => {
                   // Get the team node data to match the card styling
                   const teamNode = team.find((n: NodeData) => n.name === item.name)
                   const displayName = item.name === 'default' || item.name.toLowerCase().includes('default') 
@@ -520,18 +567,18 @@ export default function Screen4ControlRoom() {
               <AlertCircle className="h-5 w-5 text-gray-darker" />
               <h2 className="text-lg font-semibold text-gray-dark">Needs Review</h2>
               <span className="px-2 py-1 bg-gray-lighter rounded-full text-xs text-gray-darker">
-                {reviewItems.length}
+                {filteredReviewItems.length}
               </span>
             </div>
             <div className="flex-1 overflow-y-auto space-y-3">
-              {reviewItems.length === 0 ? (
+              {filteredReviewItems.length === 0 ? (
                 <Card variant="outlined" className="p-8 text-center border-dashed">
                   <p className="text-sm text-gray-darker">
                     No review items
                   </p>
                 </Card>
               ) : (
-                reviewItems.map((item) => {
+                filteredReviewItems.map((item) => {
                   const isError = item.action.type === 'error'
                   const payload = item.action.payload as any
                   const errorMessage = payload?.message || payload?.error || 'An error occurred'
@@ -878,30 +925,136 @@ export default function Screen4ControlRoom() {
               <Clock className="h-5 w-5 text-gray-darker" />
               <h2 className="text-lg font-semibold text-gray-dark">Completed Today</h2>
               <span className="px-2 py-1 bg-gray-lighter rounded-full text-xs text-gray-darker">
-                {completedItems.length}
+                {filteredCompletedItems.length}
               </span>
             </div>
             <div className="flex-1 overflow-y-auto space-y-3">
-              {completedItems.length === 0 ? (
+              {filteredCompletedItems.length === 0 ? (
                 <Card variant="outlined" className="p-8 text-center border-dashed">
                   <p className="text-sm text-gray-darker">
                     No completed tasks
                   </p>
                 </Card>
               ) : (
-                completedItems.map((item) => (
-                  <Card key={item.id} variant="elevated" className="p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs font-medium text-gray-darker">
-                        {item.digitalWorkerName}
-                      </span>
-                    </div>
-                    <div className="text-sm text-gray-dark">{item.goal}</div>
-                    <div className="text-xs text-gray-darker mt-2">
-                      {new Date(item.timestamp).toLocaleTimeString()}
-                    </div>
-                  </Card>
-                ))
+                filteredCompletedItems.map((item) => {
+                  const isFeedbackExpanded = expandedFeedbackId === item.id
+                  const feedbackHistory = item.feedbackHistory || []
+                  
+                  return (
+                    <Card key={item.id} variant="elevated" className="p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-gray-darker">
+                            {item.digitalWorkerName}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => setExpandedFeedbackId(isFeedbackExpanded ? null : item.id)}
+                          className="p-1 hover:bg-gray-lighter rounded transition-colors"
+                          title={isFeedbackExpanded ? 'Close feedback' : 'Provide feedback'}
+                        >
+                          <MessageSquare className={`h-4 w-4 ${isFeedbackExpanded ? 'text-blue-600' : 'text-gray-darker'}`} />
+                        </button>
+                      </div>
+                      <div className="text-sm text-gray-dark">{item.goal}</div>
+                      <div className="text-xs text-gray-darker mt-2">
+                        {new Date(item.timestamp).toLocaleTimeString()}
+                      </div>
+                      
+                      {/* Feedback Chat */}
+                      {isFeedbackExpanded && (
+                        <div className="mt-4 pt-4 border-t border-gray-lighter">
+                          <div className="text-xs font-semibold text-gray-darker mb-2">Provide Feedback</div>
+                          <div className="max-h-48 overflow-y-auto mb-2 space-y-2 bg-gray-50 rounded p-2">
+                            {feedbackHistory.length === 0 ? (
+                              <div className="text-xs text-gray-darker italic">No feedback yet...</div>
+                            ) : (
+                              feedbackHistory.map((msg, idx) => (
+                                <div
+                                  key={idx}
+                                  className={`text-xs p-2 rounded ${
+                                    msg.sender === 'user'
+                                      ? 'bg-blue-100 text-blue-900 ml-auto max-w-[80%]'
+                                      : 'bg-white border border-gray-200 text-gray-700'
+                                  }`}
+                                >
+                                  <div className="font-semibold mb-1">
+                                    {msg.sender === 'user' ? 'You' : 'Assistant'}
+                                  </div>
+                                  <div className="whitespace-pre-wrap">{msg.text}</div>
+                                </div>
+                              ))
+                            )}
+                            <div ref={(el) => { chatEndRefs.current[`feedback-${item.id}`] = el }} />
+                          </div>
+                          <div className="flex gap-2">
+                            <Input
+                              value={feedbackMessages[item.id] || ''}
+                              onChange={(e) => setFeedbackMessages(prev => ({ ...prev, [item.id]: e.target.value }))}
+                              placeholder="Type your feedback..."
+                              className="flex-1 text-xs"
+                              size="sm"
+                            />
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={async () => {
+                                const message = feedbackMessages[item.id]?.trim()
+                                if (!message) return
+
+                                const userMsg: ConversationMessage = {
+                                  sender: 'user',
+                                  text: message,
+                                  timestamp: new Date(),
+                                }
+                                const newHistory = [...feedbackHistory, userMsg]
+                                
+                                // Update local state
+                                setCompletedItems(prev => prev.map(i => 
+                                  i.id === item.id 
+                                    ? { ...i, feedbackHistory: newHistory }
+                                    : i
+                                ))
+                                setFeedbackMessages(prev => ({ ...prev, [item.id]: '' }))
+
+                                try {
+                                  const { response, shouldRerun } = await provideFeedbackOnCompletion(
+                                    item.workflowId,
+                                    item.goal,
+                                    message,
+                                    feedbackHistory
+                                  )
+
+                                  const assistantMsg: ConversationMessage = {
+                                    sender: 'system',
+                                    text: response,
+                                    timestamp: new Date(),
+                                  }
+
+                                  setCompletedItems(prev => prev.map(i => 
+                                    i.id === item.id 
+                                      ? { ...i, feedbackHistory: [...newHistory, assistantMsg] }
+                                      : i
+                                  ))
+
+                                  if (shouldRerun) {
+                                    // TODO: Re-execute workflow with feedback
+                                    console.log('Should rerun workflow with feedback')
+                                  }
+                                } catch (error) {
+                                  console.error('Error providing feedback:', error)
+                                }
+                              }}
+                              disabled={!feedbackMessages[item.id]?.trim()}
+                            >
+                              <Send className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </Card>
+                  )
+                })
               )}
             </div>
           </div>

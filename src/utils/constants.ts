@@ -3,6 +3,8 @@ export const STORAGE_KEYS = {
   WORKFLOWS: 'workflows',
   CONVERSATIONS: 'conversations',
   TEAM: 'team',
+  TEAMS: 'teams',
+  ORG_SETUP: 'orgSetup',
   GMAIL_AUTH: 'gmail_auth',
   REQUIREMENTS: 'requirements',
   APP_STATE: 'app_state',

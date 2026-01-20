@@ -1,5 +1,5 @@
 import { STORAGE_KEYS } from './constants'
-import type { Workflow, ConversationSession, NodeData, GmailAuthState, AppState } from '../types'
+import type { Workflow, ConversationSession, NodeData, GmailAuthState, AppState, Team } from '../types'
 
 export const storage = {
   // Workflows
@@ -70,6 +70,44 @@ export const storage = {
       localStorage.setItem(STORAGE_KEYS.TEAM, JSON.stringify(team))
     } catch (error) {
       console.error('Failed to save team:', error)
+    }
+  },
+
+  // Teams
+  getTeams: (): Team[] => {
+    try {
+      const data = localStorage.getItem(STORAGE_KEYS.TEAMS)
+      if (!data) return []
+      return JSON.parse(data)
+    } catch {
+      return []
+    }
+  },
+
+  saveTeams: (teams: Team[]): void => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.TEAMS, JSON.stringify(teams))
+    } catch (error) {
+      console.error('Failed to save teams:', error)
+    }
+  },
+
+  // Organization Setup Status
+  getOrganizationSetup: (): boolean => {
+    try {
+      const data = localStorage.getItem(STORAGE_KEYS.ORG_SETUP)
+      if (!data) return false
+      return JSON.parse(data)
+    } catch {
+      return false
+    }
+  },
+
+  saveOrganizationSetup: (isSetup: boolean): void => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.ORG_SETUP, JSON.stringify(isSetup))
+    } catch (error) {
+      console.error('Failed to save organization setup status:', error)
     }
   },
 
