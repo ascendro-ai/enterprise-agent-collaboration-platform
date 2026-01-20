@@ -69,13 +69,20 @@ export async function executeAgentAction(
     console.log(`Agent ${agentName} is analyzing step requirements: ${step.label}. The step requires: ${step.requirements?.requirementsText || 'No specific requirements provided'}. ${message}`)
   }
 
-  // Build guidance context text
+  // Build guidance context text - include all messages (user, agent, and system with file data)
   const guidanceText = guidanceContext && guidanceContext.length > 0
-    ? `\n\nUSER GUIDANCE PROVIDED:\n${guidanceContext
-        .filter((msg) => msg.sender === 'user')
-        .map((msg) => `- ${msg.text}`)
-        .join('\n')}`
+    ? `\n\nUSER GUIDANCE AND CONTEXT PROVIDED:\n${guidanceContext
+        .map((msg) => {
+          const prefix = msg.sender === 'user' ? 'User' : msg.sender === 'agent' ? 'Agent' : 'System'
+          return `[${prefix}]: ${msg.text}`
+        })
+        .join('\n\n')}`
     : ''
+
+  // Check if user has provided guidance/files
+  const hasUserGuidance = guidanceContext && guidanceContext.length > 0
+  const hasExcelData = hasUserGuidance && guidanceContext.some(msg => msg.text.includes('Excel Data:'))
+  const hasUploadedFiles = hasUserGuidance && guidanceContext.some(msg => msg.text.includes('Uploaded file:'))
 
   const prompt = `You are an AI agent executing a workflow step. Your job is to decide what actions to take based on the step requirements and blueprint constraints.
 
@@ -92,15 +99,31 @@ AVAILABLE INTEGRATIONS:
 
 ${guidanceText}
 
+${hasUserGuidance ? `
+IMPORTANT: The user has provided guidance above. You MUST:
+1. Acknowledge that you received their guidance in your message
+2. ${hasExcelData ? 'Reference the Excel data they provided and explain how you will use it' : ''}
+3. ${hasUploadedFiles ? 'Acknowledge the file(s) they uploaded' : ''}
+4. Explain specifically how their input helps you complete this step
+` : ''}
+
 CRITICAL RULES:
 1. If this is a TRIGGER step, it's an event - just mark it as complete (use "complete" action type)
 2. For ACTION steps: 
-   - If GREEN LIST is empty AND this is the first execution attempt, request guidance with: "The Green List is empty. I need to know what actions are allowed for this step before I can proceed."
-   - If GREEN LIST has items, you MUST only perform actions that are in the GREEN LIST
+   - If GREEN LIST is empty AND no user guidance has been provided, request guidance explaining EXACTLY what information you need
+   - If GREEN LIST has items OR user has provided guidance, proceed with the allowed actions
 3. You MUST NOT perform any actions in the RED LIST
-4. If you need clarification or guidance, request it using "guidance_requested" action type
+4. When requesting guidance, be SPECIFIC about:
+   - What information is missing
+   - What decision you need help with
+   - What data or files would help you proceed
 5. If Gmail is available and the step involves email, use Gmail API actions
 6. Be specific with action parameters (to, subject, body for emails)
+
+GUIDANCE REQUEST EXAMPLES (be this specific):
+- "I need the inventory data file to identify which items are expiring soon. Please upload the Excel file with current inventory."
+- "I found 3 items expiring within 2 days. Should I create marketing for all 3, or focus on the highest-value item (Peonies at $6/unit)?"
+- "The email recipients are not specified. Who should receive the marketing images - customers, suppliers, or internal team?"
 
 Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON only with this structure:
 {
@@ -113,20 +136,20 @@ Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any 
         "body": "Email body" (for send_email),
         "emailId": "email-id" (for modify_email),
         "label": "label-name" (for modify_email),
-        "guidanceQuestion": "What should I do about X?" (for guidance_requested)
+        "guidanceQuestion": "Specific question about what you need" (for guidance_requested)
       }
     }
   ],
-  "message": "Brief description of what you're doing",
+  "message": "${hasUserGuidance ? 'Start with: Thank you for the guidance. Then explain what you are doing with it.' : 'Brief description of what you are doing'}",
   "needsGuidance": true/false,
-  "guidanceQuestion": "Question if needsGuidance is true"
+  "guidanceQuestion": "Specific, actionable question if needsGuidance is true"
 }
 
 Think step by step:
-1. What does this step require me to do?
+1. ${hasUserGuidance ? 'What guidance/data did the user provide? How does it help?' : 'What does this step require me to do?'}
 2. What actions are allowed (greenList)?
 3. What actions are forbidden (redList)?
-4. Do I have enough information to proceed?
+4. Do I have enough information to proceed? If not, what SPECIFIC information do I need?
 5. What specific actions should I take?
 
 Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any markdown syntax. Return raw JSON object only, no other text.`
@@ -171,12 +194,11 @@ Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any 
 
     for (const action of executionData.actions) {
       try {
-        await executeSingleAction(action, hasGmail)
+        await executeSingleAction(action, hasGmail || false)
         executedActions.push(action)
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
         console.error(`Error executing action ${action.type}:`, errorMessage)
-        lastError = errorMessage
         
         // If it's a guidance request, don't fail - just return it
         if (action.type === 'guidance_requested') {

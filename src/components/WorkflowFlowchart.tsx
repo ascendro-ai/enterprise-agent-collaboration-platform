@@ -335,7 +335,13 @@ export default function WorkflowFlowchart({
                 return
               }
               
-              // Human-assigned steps: do nothing (no requirements gathering)
+              // Trigger and End steps: always open requirements gathering (regardless of assignment)
+              if (step.type === 'trigger' || step.type === 'end') {
+                onStepClick?.(step.id)
+                return
+              }
+              
+              // Human-assigned action/decision steps: do nothing (no requirements gathering)
               if (step.assignedTo?.type === 'human') {
                 e.stopPropagation()
                 return

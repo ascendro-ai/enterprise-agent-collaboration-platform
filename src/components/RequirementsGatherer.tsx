@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Send, ArrowLeft, Plus, Upload, Mail, Bot } from 'lucide-react'
+import { Send, ArrowLeft, Plus, Upload, Mail, Bot, Image as ImageIcon } from 'lucide-react'
 import { 
   buildAutomation, 
   getInitialRequirementsMessage, 
@@ -12,6 +12,10 @@ import {
   extractEndConfiguration,
 } from '../services/geminiService'
 import { initiateGmailAuth, isGmailAuthenticated } from '../services/gmailService'
+import { isExcelFile } from '../services/excelService'
+import { generateImage, generateImageFromExcelInsights } from '../services/imageGenerationService'
+import { useFileUpload } from '../hooks/useFileUpload'
+import { FileUploadChips } from './ui/FileUploadChips'
 import { useWorkflows } from '../contexts/WorkflowContext'
 import type { WorkflowStep, ConversationMessage } from '../types'
 import Input from './ui/Input'
@@ -45,10 +49,34 @@ function TriggerStepConfig({
     outstandingQuestions?: string[]
   } | null>(null)
   const [showPlusMenu, setShowPlusMenu] = useState(false)
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
+  const [generatedImages, setGeneratedImages] = useState<string[]>([])
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false)
   const [gmailConnected, setGmailConnected] = useState(isGmailAuthenticated())
+  const [uploadedFileName, setUploadedFileName] = useState<string>('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
+  
+  // Use shared file upload hook
+  const {
+    files: uploadedFiles,
+    excelData,
+    uploadingFiles,
+    handleFileUpload: handleFileUploadBase,
+    removeFile,
+    clearFiles,
+  } = useFileUpload({
+    onExcelProcessed: (_excelData, fileName) => {
+      // Just store filename - Excel data passed as context to LLM, not shown in chat
+      setUploadedFileName(fileName)
+      console.log(`🟢 Trigger: Excel "${fileName}" ready as LLM context`)
+    },
+  })
+  
+  // Wrapper that closes menu
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await handleFileUploadBase(e)
+    setShowPlusMenu(false)
+  }
 
   // Check Gmail connection status periodically
   useEffect(() => {
@@ -157,16 +185,26 @@ function TriggerStepConfig({
     try {
       const createTaskConversation = getConversationByWorkflowId(workflowId)
       
+      // Include Excel data as context if available (not shown in chat)
+      const messagesWithContext = excelData
+        ? [...newMessages, {
+            sender: 'system' as const,
+            text: `[Excel file context: ${uploadedFileName || 'spreadsheet'}]\n\nExcel Data:\n${excelData}\n\nReference this data in your response if relevant, but don't copy-paste raw data. Provide insights.`,
+            excelData: excelData,
+            timestamp: new Date(),
+          }]
+        : newMessages
+      
       // Generate conversational response AND extract configuration in parallel
       const [conversationalResponse, configResult] = await Promise.all([
         gatherTriggerConversation(
           step,
-          newMessages,
+          messagesWithContext,
           createTaskConversation?.messages
         ),
         extractTriggerConfiguration(
           step,
-          newMessages,
+          messagesWithContext,
           createTaskConversation?.messages
         )
       ])
@@ -194,6 +232,10 @@ function TriggerStepConfig({
       }
       
       updateStepRequirements(workflowId, step.id, requirements)
+      
+      // Clear uploaded files after message is sent successfully
+      clearFiles()
+      setUploadedFileName('')
     } catch (error) {
       console.error('Error in trigger configuration:', error)
       const errorMessage: ConversationMessage = {
@@ -229,10 +271,45 @@ function TriggerStepConfig({
     }
   }
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || [])
-    setUploadedFiles([...uploadedFiles, ...files])
-    setShowPlusMenu(false)
+  
+  const handleGenerateImage = async () => {
+    if (!excelData && !inputValue.trim()) {
+      return
+    }
+    
+    setIsGeneratingImage(true)
+    try {
+      let imageUrl: string
+      
+      if (excelData) {
+        // Generate image from Excel insights
+        imageUrl = await generateImageFromExcelInsights(excelData, inputValue.trim() || 'Generate a visual representation based on the Excel data')
+      } else {
+        // Generate image from prompt only
+        imageUrl = await generateImage(inputValue.trim())
+      }
+      
+      setGeneratedImages([...generatedImages, imageUrl])
+      
+      // Add image to messages
+      const imageMessage: ConversationMessage = {
+        sender: 'system',
+        text: 'Image generated successfully',
+        imageUrl: imageUrl,
+        timestamp: new Date(),
+      }
+      setMessages([...messages, imageMessage])
+    } catch (error) {
+      console.error('Error generating image:', error)
+      const errorMessage: ConversationMessage = {
+        sender: 'system',
+        text: `Failed to generate image: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        timestamp: new Date(),
+      }
+      setMessages([...messages, errorMessage])
+    } finally {
+      setIsGeneratingImage(false)
+    }
   }
 
   const handleRemoveFile = (index: number) => {
@@ -301,6 +378,11 @@ function TriggerStepConfig({
                         }`}
                       >
                         {message.text}
+                        {message.imageUrl && (
+                          <div className="mt-2">
+                            <img src={message.imageUrl} alt="Generated" className="max-w-full rounded" />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -322,24 +404,13 @@ function TriggerStepConfig({
           {/* Input Area */}
           <div className="p-4 border-t border-gray-lighter bg-white">
             {/* File Upload Chips */}
-            {uploadedFiles.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2">
-                {uploadedFiles.map((file, index) => (
-                  <div
-                    key={index}
-                    className="flex items-center gap-2 px-3 py-1 bg-gray-lighter rounded-full text-xs text-gray-dark"
-                  >
-                    <span>{file.name}</span>
-                    <button
-                      onClick={() => handleRemoveFile(index)}
-                      className="text-gray-darker hover:text-gray-dark"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="mb-2">
+              <FileUploadChips
+                files={uploadedFiles}
+                uploadingFiles={uploadingFiles}
+                onRemove={removeFile}
+              />
+            </div>
 
             <div className="flex items-center gap-2">
               {/* Plus Button */}
@@ -547,10 +618,34 @@ function EndStepConfig({
     outstandingQuestions?: string[]
   } | null>(null)
   const [showPlusMenu, setShowPlusMenu] = useState(false)
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
+  const [generatedImages, setGeneratedImages] = useState<string[]>([])
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false)
   const [gmailConnected, setGmailConnected] = useState(isGmailAuthenticated())
+  const [uploadedFileName, setUploadedFileName] = useState<string>('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
+  
+  // Use shared file upload hook
+  const {
+    files: uploadedFiles,
+    excelData,
+    uploadingFiles,
+    handleFileUpload: handleFileUploadBase,
+    removeFile,
+    clearFiles,
+  } = useFileUpload({
+    onExcelProcessed: (_excelData, fileName) => {
+      // Just store filename - Excel data passed as context to LLM, not shown in chat
+      setUploadedFileName(fileName)
+      console.log(`🟢 End: Excel "${fileName}" ready as LLM context`)
+    },
+  })
+  
+  // Wrapper that closes menu
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await handleFileUploadBase(e)
+    setShowPlusMenu(false)
+  }
 
   // Check Gmail connection status periodically
   useEffect(() => {
@@ -659,16 +754,26 @@ function EndStepConfig({
     try {
       const createTaskConversation = getConversationByWorkflowId(workflowId)
       
+      // Include Excel data as context if available (not shown in chat)
+      const messagesWithContext = excelData
+        ? [...newMessages, {
+            sender: 'system' as const,
+            text: `[Excel file context: ${uploadedFileName || 'spreadsheet'}]\n\nExcel Data:\n${excelData}\n\nReference this data in your response if relevant, but don't copy-paste raw data. Provide insights.`,
+            excelData: excelData,
+            timestamp: new Date(),
+          }]
+        : newMessages
+      
       // Generate conversational response AND extract configuration in parallel
       const [conversationalResponse, configResult] = await Promise.all([
         gatherEndConversation(
           step,
-          newMessages,
+          messagesWithContext,
           createTaskConversation?.messages
         ),
         extractEndConfiguration(
           step,
-          newMessages,
+          messagesWithContext,
           createTaskConversation?.messages
         )
       ])
@@ -696,6 +801,10 @@ function EndStepConfig({
       }
       
       updateStepRequirements(workflowId, step.id, requirements)
+      
+      // Clear uploaded files after message is sent successfully
+      clearFiles()
+      setUploadedFileName('')
     } catch (error) {
       console.error('Error in end configuration:', error)
       const errorMessage: ConversationMessage = {
@@ -731,10 +840,45 @@ function EndStepConfig({
     }
   }
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || [])
-    setUploadedFiles([...uploadedFiles, ...files])
-    setShowPlusMenu(false)
+  
+  const handleGenerateImage = async () => {
+    if (!excelData && !inputValue.trim()) {
+      return
+    }
+    
+    setIsGeneratingImage(true)
+    try {
+      let imageUrl: string
+      
+      if (excelData) {
+        // Generate image from Excel insights
+        imageUrl = await generateImageFromExcelInsights(excelData, inputValue.trim() || 'Generate a visual representation based on the Excel data')
+      } else {
+        // Generate image from prompt only
+        imageUrl = await generateImage(inputValue.trim())
+      }
+      
+      setGeneratedImages([...generatedImages, imageUrl])
+      
+      // Add image to messages
+      const imageMessage: ConversationMessage = {
+        sender: 'system',
+        text: 'Image generated successfully',
+        imageUrl: imageUrl,
+        timestamp: new Date(),
+      }
+      setMessages([...messages, imageMessage])
+    } catch (error) {
+      console.error('Error generating image:', error)
+      const errorMessage: ConversationMessage = {
+        sender: 'system',
+        text: `Failed to generate image: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        timestamp: new Date(),
+      }
+      setMessages([...messages, errorMessage])
+    } finally {
+      setIsGeneratingImage(false)
+    }
   }
 
   const handleRemoveFile = (index: number) => {
@@ -803,6 +947,11 @@ function EndStepConfig({
                         }`}
                       >
                         {message.text}
+                        {message.imageUrl && (
+                          <div className="mt-2">
+                            <img src={message.imageUrl} alt="Generated" className="max-w-full rounded" />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -824,24 +973,13 @@ function EndStepConfig({
           {/* Input Area */}
           <div className="p-4 border-t border-gray-lighter bg-white">
             {/* File Upload Chips */}
-            {uploadedFiles.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2">
-                {uploadedFiles.map((file, index) => (
-                  <div
-                    key={index}
-                    className="flex items-center gap-2 px-3 py-1 bg-gray-lighter rounded-full text-xs text-gray-dark"
-                  >
-                    <span>{file.name}</span>
-                    <button
-                      onClick={() => handleRemoveFile(index)}
-                      className="text-gray-darker hover:text-gray-dark"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="mb-2">
+              <FileUploadChips
+                files={uploadedFiles}
+                uploadingFiles={uploadingFiles}
+                onRemove={removeFile}
+              />
+            </div>
 
             <div className="flex items-center gap-2">
               {/* Plus Button */}
@@ -1077,10 +1215,34 @@ export default function RequirementsGatherer({
   } | null>(null)
   const [requirementsText, setRequirementsText] = useState('')
   const [showPlusMenu, setShowPlusMenu] = useState(false)
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
+  const [generatedImages, setGeneratedImages] = useState<string[]>([])
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false)
   const [gmailConnected, setGmailConnected] = useState(isGmailAuthenticated())
+  const [uploadedFileName, setUploadedFileName] = useState<string>('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
+  
+  // Use shared file upload hook
+  const {
+    files: uploadedFiles,
+    excelData,
+    uploadingFiles,
+    handleFileUpload: handleFileUploadBase,
+    removeFile,
+    clearFiles,
+  } = useFileUpload({
+    onExcelProcessed: (_excelData, fileName) => {
+      // Just store filename - Excel data passed as context to LLM, not shown in chat
+      setUploadedFileName(fileName)
+      console.log(`🟢 Requirements: Excel "${fileName}" ready as LLM context`)
+    },
+  })
+  
+  // Wrapper that closes menu
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await handleFileUploadBase(e)
+    setShowPlusMenu(false)
+  }
 
   // Check Gmail connection status periodically
   useEffect(() => {
@@ -1197,16 +1359,26 @@ export default function RequirementsGatherer({
       // Get conversation context from Create a Task
       const createTaskConversation = getConversationByWorkflowId(workflowId)
       
+      // Include Excel data as context if available (not shown in chat)
+      const messagesWithContext = excelData
+        ? [...newMessages, {
+            sender: 'system' as const,
+            text: `[Excel file context: ${uploadedFileName || 'spreadsheet'}]\n\nExcel Data:\n${excelData}\n\nReference this data in your response if relevant, but don't copy-paste raw data. Provide insights.`,
+            excelData: excelData,
+            timestamp: new Date(),
+          }]
+        : newMessages
+      
       // Generate conversational response AND extract blueprint data in parallel
       const [conversationalResponse, blueprintResult] = await Promise.all([
         gatherRequirementsConversation(
           step,
-          newMessages,
+          messagesWithContext,
           createTaskConversation?.messages
         ),
         buildAutomation(
           step,
-          newMessages,
+          messagesWithContext,
           createTaskConversation?.messages
         )
       ])
@@ -1238,6 +1410,10 @@ export default function RequirementsGatherer({
       }
       
       updateStepRequirements(workflowId, step.id, requirements)
+      
+      // Clear uploaded files after message is sent successfully
+      clearFiles()
+      setUploadedFileName('')
     } catch (error) {
       console.error('Error building automation:', error)
       const errorMessage: ConversationMessage = {
@@ -1276,6 +1452,8 @@ export default function RequirementsGatherer({
       },
       customRequirements: blueprint ? [] : [],
       blueprint: blueprint || { greenList: [], redList: [] },
+      generatedImages: generatedImages.length > 0 ? generatedImages : undefined,
+      excelData: excelData || undefined,
     }
 
     updateStepRequirements(workflowId, step.id, requirements)
@@ -1289,10 +1467,45 @@ export default function RequirementsGatherer({
     }
   }
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || [])
-    setUploadedFiles([...uploadedFiles, ...files])
-    setShowPlusMenu(false)
+  
+  const handleGenerateImage = async () => {
+    if (!excelData && !inputValue.trim()) {
+      return
+    }
+    
+    setIsGeneratingImage(true)
+    try {
+      let imageUrl: string
+      
+      if (excelData) {
+        // Generate image from Excel insights
+        imageUrl = await generateImageFromExcelInsights(excelData, inputValue.trim() || 'Generate a visual representation based on the Excel data')
+      } else {
+        // Generate image from prompt only
+        imageUrl = await generateImage(inputValue.trim())
+      }
+      
+      setGeneratedImages([...generatedImages, imageUrl])
+      
+      // Add image to messages
+      const imageMessage: ConversationMessage = {
+        sender: 'system',
+        text: 'Image generated successfully',
+        imageUrl: imageUrl,
+        timestamp: new Date(),
+      }
+      setMessages([...messages, imageMessage])
+    } catch (error) {
+      console.error('Error generating image:', error)
+      const errorMessage: ConversationMessage = {
+        sender: 'system',
+        text: `Failed to generate image: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        timestamp: new Date(),
+      }
+      setMessages([...messages, errorMessage])
+    } finally {
+      setIsGeneratingImage(false)
+    }
   }
 
   const handleRemoveFile = (index: number) => {
@@ -1361,6 +1574,11 @@ export default function RequirementsGatherer({
                         }`}
                       >
                         {message.text}
+                        {message.imageUrl && (
+                          <div className="mt-2">
+                            <img src={message.imageUrl} alt="Generated" className="max-w-full rounded" />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1382,24 +1600,13 @@ export default function RequirementsGatherer({
           {/* Input Area */}
           <div className="p-4 border-t border-gray-lighter bg-white">
             {/* File Upload Chips */}
-            {uploadedFiles.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2">
-                {uploadedFiles.map((file, index) => (
-                  <div
-                    key={index}
-                    className="flex items-center gap-2 px-3 py-1 bg-gray-lighter rounded-full text-xs text-gray-dark"
-                  >
-                    <span>{file.name}</span>
-                    <button
-                      onClick={() => handleRemoveFile(index)}
-                      className="text-gray-darker hover:text-gray-dark"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="mb-2">
+              <FileUploadChips
+                files={uploadedFiles}
+                uploadingFiles={uploadingFiles}
+                onRemove={removeFile}
+              />
+            </div>
 
             <div className="flex items-center gap-2">
               {/* Plus Button */}
@@ -1454,6 +1661,17 @@ export default function RequirementsGatherer({
                   onChange={handleFileUpload}
                 />
               </div>
+              {/* Image Generation Button */}
+              {(excelData || inputValue.trim()) && (
+                <button
+                  onClick={handleGenerateImage}
+                  disabled={isGeneratingImage || isLoading}
+                  className="p-2 hover:bg-gray-lighter rounded-md transition-colors disabled:opacity-50"
+                  title="Generate image from Excel data or prompt"
+                >
+                  <ImageIcon className="h-5 w-5 text-gray-darker" />
+                </button>
+              )}
 
               {/* Text Input */}
               <Input

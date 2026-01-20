@@ -19,7 +19,13 @@ interface ExecutionState {
   stepStartTimes: Map<string, number> // Track step start times for duration calculation
   guidanceContext?: Array<{
     stepId: string
-    chatHistory: Array<{ sender: 'user' | 'agent'; text: string; timestamp: Date }>
+    chatHistory: Array<{ 
+      sender: 'user' | 'agent' | 'system'
+      text: string
+      timestamp: Date
+      excelData?: string
+      uploadedFileName?: string
+    }>
     timestamp: Date
   }>
 }
@@ -289,7 +295,26 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
   const blueprint = step.requirements?.blueprint || { greenList: [], redList: [] }
   
   // Get guidance context for this step if available
-  const guidanceContext = state?.guidanceContext?.find((g) => g.stepId === step.id)?.chatHistory
+  const guidanceContextRaw = state?.guidanceContext?.find((g) => g.stepId === step.id)?.chatHistory
+  // Include system messages that have file data, and map to include Excel data
+  const guidanceContext = guidanceContextRaw?.filter((msg) => {
+    // Include user and agent messages, OR system messages with file data
+    return msg.sender !== 'system' || ('excelData' in msg && msg.excelData) || ('uploadedFileName' in msg && msg.uploadedFileName)
+  }).map((msg) => {
+    // Include Excel data in the message text if available
+    let text = msg.text
+    if ('excelData' in msg && msg.excelData) {
+      text = `${text}\n\nExcel Data:\n${msg.excelData}`
+    }
+    if ('uploadedFileName' in msg && msg.uploadedFileName) {
+      text = `${text}\n\nUploaded file: ${msg.uploadedFileName}`
+    }
+    return {
+      sender: msg.sender as 'user' | 'agent',
+      text,
+      timestamp: msg.timestamp,
+    }
+  }) as Array<{ sender: 'user' | 'agent'; text: string; timestamp: Date }> | undefined
 
   // Get integrations
   const integrations = {
@@ -329,7 +354,7 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
         data: {
           workflowId,
           stepId: step.id,
-          digitalWorkerName: step.assignedTo?.agentName || digitalWorkerName,
+          digitalWorkerName, // Use main digital worker name, not sub-agent
           action: {
             type: 'guidance_requested',
             payload: {
@@ -352,7 +377,7 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
         data: {
           workflowId,
           stepId: step.id,
-          digitalWorkerName: step.assignedTo?.agentName || digitalWorkerName,
+          digitalWorkerName, // Use main digital worker name, not sub-agent
           action: {
             type: 'approval_required',
             payload: {
@@ -399,7 +424,7 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
         data: {
           workflowId,
           stepId: step.id,
-          digitalWorkerName: step.assignedTo?.agentName || digitalWorkerName,
+          digitalWorkerName, // Use main digital worker name, not sub-agent
           action: {
             type: 'guidance_requested',
             payload: {

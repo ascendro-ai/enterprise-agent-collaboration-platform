@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, Plus, Mic, ArrowLeft, Upload, Mail } from 'lucide-react'
+import { Send, Plus, Mic, ArrowLeft, Upload, Mail, Image as ImageIcon, XCircle } from 'lucide-react'
 import { useWorkflows } from '../contexts/WorkflowContext'
-import { useTeam } from '../contexts/TeamContext'
-import { consultWorkflow, extractWorkflowFromConversation, extractPeopleFromConversation } from '../services/geminiService'
+import { consultWorkflow, extractWorkflowFromConversation } from '../services/geminiService'
 import { initiateGmailAuth, isGmailAuthenticated } from '../services/gmailService'
+import { isExcelFile } from '../services/excelService'
+import { generateImage, generateImageFromExcelInsights } from '../services/imageGenerationService'
+import { useFileUpload } from '../hooks/useFileUpload'
+import { FileUploadChips } from './ui/FileUploadChips'
 import { GEMINI_CONFIG } from '../utils/constants'
 import type { ConversationMessage, ConversationSession } from '../types'
 import Input from './ui/Input'
@@ -18,7 +21,6 @@ import {
 
 export default function Screen1Consultant() {
   const { addWorkflow, addConversation, updateConversation, conversations } = useWorkflows()
-  const { addNode, team } = useTeam()
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -27,7 +29,23 @@ export default function Screen1Consultant() {
   const [currentWorkflowId, setCurrentWorkflowId] = useState<string | null>(null)
   const [showPlusMenu, setShowPlusMenu] = useState(false)
   const [gmailConnected, setGmailConnected] = useState(isGmailAuthenticated())
+  const [generatedImages, setGeneratedImages] = useState<string[]>([])
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  
+  // Use shared file upload hook
+  const {
+    files: uploadedFiles,
+    excelData,
+    uploadingFiles,
+    handleFileUpload,
+    removeFile,
+    clearFiles,
+  } = useFileUpload({
+    onExcelProcessed: (excelData, fileName) => {
+      console.log('🟢 Excel file processed successfully - available as context:', fileName)
+    },
+  })
   const extractionTimeoutRef = useRef<number | null>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
 
@@ -101,24 +119,6 @@ export default function Screen1Consultant() {
             // Update the workflow (this will update if exists, add if new)
             addWorkflow(workflow)
             
-            // Extract and add team nodes automatically (only human workers)
-            try {
-              const extractedPeople = await extractPeopleFromConversation(conversationHistory)
-              // Filter to only add human workers (exclude digital workers/AI agents)
-              const humanWorkers = extractedPeople.filter((person) => person.type === 'human')
-              humanWorkers.forEach((person) => {
-                // Only add if node doesn't already exist
-                const exists = team.some((n) => n.name.toLowerCase() === person.name.toLowerCase())
-                if (!exists) {
-                  addNode(person)
-                  console.log(`✅ [Auto Node Creation] Added human worker "${person.name}" to team`)
-                }
-              })
-            } catch (error) {
-              console.error('Error extracting people from conversation:', error)
-              // Silent fail - don't interrupt workflow extraction
-            }
-            
             // Link conversation to workflow (only once)
             if (sessionId && !currentWorkflowId) {
               const session = conversations.find((c) => c.id === sessionId)
@@ -140,7 +140,52 @@ export default function Screen1Consultant() {
         }
       }
     }, 500) // 500ms debounce
-  }, [addWorkflow, sessionId, conversations, updateConversation, getWorkflowIdForSession, currentWorkflowId, addNode, team])
+  }, [addWorkflow, sessionId, conversations, updateConversation, getWorkflowIdForSession, currentWorkflowId])
+
+  // Wrapper for file upload that closes the menu
+  const handleFileUploadWrapper = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    console.log('🟡 File input onChange triggered in Create a Task')
+    await handleFileUpload(e)
+    setShowPlusMenu(false)
+  }
+
+  // Handle image generation
+  const handleGenerateImage = async () => {
+    if (!excelData && !inputValue.trim()) {
+      alert('Please upload an Excel file or enter a prompt first')
+      return
+    }
+
+    setIsGeneratingImage(true)
+    try {
+      let imageUrl: string
+      if (excelData) {
+        console.log('🟢 Generating image from Excel insights')
+        imageUrl = await generateImageFromExcelInsights(excelData, inputValue.trim() || 'Create a marketing image based on the inventory data')
+      } else {
+        console.log('🟢 Generating image from prompt')
+        imageUrl = await generateImage(inputValue.trim())
+      }
+      
+      setGeneratedImages(prev => [...prev, imageUrl])
+      
+      // Add image to conversation
+      const imageMessage: ConversationMessage = {
+        sender: 'system',
+        text: `Generated marketing image`,
+        imageUrl: imageUrl,
+        timestamp: new Date(),
+      }
+      setMessages(prev => [...prev, imageMessage])
+      
+      console.log('🟢 Image generated successfully')
+    } catch (error) {
+      console.error('🔴 Error generating image:', error)
+      alert('Failed to generate image. Please try again.')
+    } finally {
+      setIsGeneratingImage(false)
+    }
+  }
 
   const handleSend = async () => {
     if (!inputValue.trim() || isLoading) return
@@ -168,8 +213,17 @@ export default function Screen1Consultant() {
     }
 
     try {
-      // Get consultant response
-      const { response, isComplete } = await consultWorkflow(newMessages, questionCount)
+      // Get consultant response - include Excel data as context if available
+      const messagesWithContext = excelData 
+        ? [...newMessages, {
+            sender: 'system' as const,
+            text: `[Excel file context available: ${uploadedFiles.find(f => isExcelFile(f))?.name || 'spreadsheet'}]\n\nExcel Data:\n${excelData}\n\nYou can reference this Excel data in your response if relevant, but don't copy-paste the raw data. Provide insights or thoughts based on it.`,
+            excelData: excelData,
+            timestamp: new Date(),
+          }]
+        : newMessages
+      
+      const { response, isComplete } = await consultWorkflow(messagesWithContext, questionCount)
 
       const systemMessage: ConversationMessage = {
         sender: 'system',
@@ -192,6 +246,9 @@ export default function Screen1Consultant() {
 
       // Extract workflow in background after each message exchange
       extractWorkflow(updatedMessages)
+      
+      // Clear uploaded files after message is sent successfully
+      clearFiles()
     } catch (error) {
       console.error('Error getting consultant response:', error)
       const errorDetails = error instanceof Error ? error.message : String(error)
@@ -240,8 +297,17 @@ export default function Screen1Consultant() {
     }
 
     try {
-      // Get consultant response
-      const { response, isComplete } = await consultWorkflow(newMessages, questionCount)
+      // Get consultant response - include Excel data as context if available
+      const messagesWithContext = excelData 
+        ? [...newMessages, {
+            sender: 'system' as const,
+            text: `[Excel file context available: ${uploadedFiles.find(f => isExcelFile(f))?.name || 'spreadsheet'}]\n\nExcel Data:\n${excelData}\n\nYou can reference this Excel data in your response if relevant, but don't copy-paste the raw data. Provide insights or thoughts based on it.`,
+            excelData: excelData,
+            timestamp: new Date(),
+          }]
+        : newMessages
+      
+      const { response, isComplete } = await consultWorkflow(messagesWithContext, questionCount)
 
       const systemMessage: ConversationMessage = {
         sender: 'system',
@@ -264,6 +330,9 @@ export default function Screen1Consultant() {
 
       // Extract workflow in background after each message exchange
       extractWorkflow(updatedMessages)
+      
+      // Clear uploaded files after message is sent successfully
+      clearFiles()
     } catch (error) {
       console.error('Error getting consultant response:', error)
       const errorDetails = error instanceof Error ? error.message : String(error)
@@ -377,6 +446,15 @@ export default function Screen1Consultant() {
                   }`}
                 >
                   <p className="text-sm">{message.text}</p>
+                  {message.imageUrl && (
+                    <div className="mt-2">
+                      <img 
+                        src={message.imageUrl} 
+                        alt="Generated image"
+                        className="max-w-md rounded-lg border border-gray-300"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -394,6 +472,36 @@ export default function Screen1Consultant() {
         <div ref={messagesEndRef} />
       </div>
 
+      {/* File Upload Chips */}
+      <div className="px-6 pb-2">
+        <FileUploadChips
+          files={uploadedFiles}
+          uploadingFiles={uploadingFiles}
+          onRemove={removeFile}
+        />
+      </div>
+
+      {/* Generated Images */}
+      {generatedImages.length > 0 && (
+        <div className="px-6 pb-2 flex flex-wrap gap-2">
+          {generatedImages.map((imageUrl, index) => (
+            <div key={index} className="relative">
+              <img 
+                src={imageUrl} 
+                alt={`Generated image ${index + 1}`}
+                className="max-w-xs rounded-lg border border-gray-300"
+              />
+              <button
+                onClick={() => setGeneratedImages(prev => prev.filter((_, i) => i !== index))}
+                className="absolute top-1 right-1 w-6 h-6 rounded-full bg-gray-700 hover:bg-gray-600 flex items-center justify-center"
+              >
+                <XCircle className="h-4 w-4 text-white" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Input Area */}
       <div className="p-6 border-t border-gray-lighter">
         <div className="flex items-center gap-2">
@@ -408,8 +516,17 @@ export default function Screen1Consultant() {
             {showPlusMenu && (
               <div className="absolute bottom-full left-0 mb-2 bg-white border border-gray-lighter rounded-md shadow-lg z-10 min-w-48">
                 <button
-                  onClick={() => {
-                    document.getElementById('file-upload')?.click()
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    console.log('🟢 Upload File button clicked')
+                    const input = document.getElementById('file-upload') as HTMLInputElement
+                    if (input) {
+                      console.log('🟢 Found input, clicking it')
+                      input.click()
+                    } else {
+                      console.error('🔴 Input not found!')
+                    }
                     setShowPlusMenu(false)
                   }}
                   className="w-full px-4 py-2 text-left text-sm text-gray-dark hover:bg-gray-lighter flex items-center gap-2"
@@ -417,6 +534,16 @@ export default function Screen1Consultant() {
                   <Upload className="h-4 w-4" />
                   Upload File
                 </button>
+                {(excelData || inputValue.trim()) && (
+                  <button
+                    onClick={handleGenerateImage}
+                    disabled={isGeneratingImage}
+                    className="w-full px-4 py-2 text-left text-sm text-gray-dark hover:bg-gray-lighter flex items-center gap-2 border-t border-gray-lighter disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <ImageIcon className="h-4 w-4" />
+                    {isGeneratingImage ? 'Generating...' : 'Generate Image'}
+                  </button>
+                )}
                 <button
                   onClick={async () => {
                     setShowPlusMenu(false)
@@ -447,10 +574,7 @@ export default function Screen1Consultant() {
             type="file"
             className="hidden"
             multiple
-            onChange={(e) => {
-              // Handle file upload if needed in the future
-              console.log('Files selected:', e.target.files)
-            }}
+            onChange={handleFileUploadWrapper}
           />
           <div className="flex-1 relative">
             <Input

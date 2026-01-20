@@ -4,7 +4,8 @@
 
 @layer base {
   body {
-    @apply bg-white text-gray-dark font-sans;
+    @apply bg-white text-neutral-900;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   }
 }
 

@@ -2,6 +2,7 @@ import { FileText, Workflow, Users, Monitor } from 'lucide-react'
 import { useApp } from '../contexts/AppContext'
 import { cn } from './utils/cn'
 import type { TabType } from '../types'
+import copilotLogo from '../assets/copilot-logo.png'
 
 interface SidebarProps {
   user?: {
@@ -27,10 +28,8 @@ export default function Sidebar({ user }: SidebarProps) {
       {/* Logo */}
       <div className="p-6 border-b border-gray-lighter">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-gray-dark rounded flex items-center justify-center">
-            <span className="text-white font-bold text-sm">W</span>
-          </div>
-          <span className="text-lg font-semibold text-gray-dark">Workflow.ai</span>
+          <img src={copilotLogo} alt="Copilot" className="h-8 w-auto" />
+          <span className="text-lg font-semibold text-gray-dark">Copilot Agents</span>
         </div>
       </div>
 

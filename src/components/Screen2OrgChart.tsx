@@ -735,12 +735,10 @@ export default function Screen2OrgChart() {
     <div className="flex flex-col h-screen bg-gray-light">
       {/* Header */}
       <div className="p-6 bg-white border-b border-gray-lighter">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-dark mb-2">Your Team</h1>
-          <p className="text-sm text-gray-darker">
-            Drag canvas to pan • Click digital workers to assign workflows
-          </p>
-        </div>
+        <h1 className="text-2xl font-semibold text-gray-dark mb-2">Your Team</h1>
+        <p className="text-sm text-gray-darker">
+          Drag canvas to pan • Click digital workers to assign workflows
+        </p>
       </div>
 
       {/* Canvas Area */}

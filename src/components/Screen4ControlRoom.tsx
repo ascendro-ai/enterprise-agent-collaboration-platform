@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
-import { Eye, AlertCircle, Clock, CheckCircle, XCircle, MessageSquare, Send } from 'lucide-react'
+import { Eye, AlertCircle, Clock, CheckCircle, XCircle, MessageSquare, Send, Upload, Plus } from 'lucide-react'
 import { CONTROL_ROOM_EVENT } from '../utils/constants'
 import { useTeam } from '../contexts/TeamContext'
 import { approveReviewItem, rejectReviewItem, provideGuidanceToReviewItem } from '../services/workflowExecutionService'
+import { parseExcelFile, isExcelFile } from '../services/excelService'
+import { FileUploadChips } from './ui/FileUploadChips'
 import type { ControlRoomUpdate, ReviewItem, CompletedItem, NodeData } from '../types'
 import Card from './ui/Card'
 import Button from './ui/Button'
@@ -15,7 +17,12 @@ export default function Screen4ControlRoom() {
   const [completedItems, setCompletedItems] = useState<CompletedItem[]>([])
   const [expandedChatId, setExpandedChatId] = useState<string | null>(null)
   const [chatMessages, setChatMessages] = useState<Record<string, string>>({})
+  const [uploadedFiles, setUploadedFiles] = useState<Record<string, File[]>>({})
+  const [showFileMenu, setShowFileMenu] = useState<Record<string, boolean>>({})
+  const [uploadingFiles, setUploadingFiles] = useState<Record<string, boolean>>({})
+  const [uploadedFileStatus, setUploadedFileStatus] = useState<Record<string, Record<string, 'uploading' | 'success' | 'error'>>>({})
   const chatEndRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const fileMenuRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   // Sync active workers from team state
   useEffect(() => {
@@ -146,6 +153,26 @@ export default function Screen4ControlRoom() {
       delete updated[item.id]
       return updated
     })
+    setUploadedFiles((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
+    setShowFileMenu((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
+    setUploadedFileStatus((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
+    setUploadingFiles((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
   }
 
   const handleReject = (item: ReviewItem) => {
@@ -157,37 +184,222 @@ export default function Screen4ControlRoom() {
       delete updated[item.id]
       return updated
     })
+    setUploadedFiles((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
+    setShowFileMenu((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
+    setUploadedFileStatus((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
+    setUploadingFiles((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
+  }
+
+  // Helper function to get file type display name
+
+  const handleFileUpload = async (itemId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    console.log('🔵 handleFileUpload called for item:', itemId)
+    console.log('🔵 Event target:', e.target)
+    console.log('🔵 Files:', e.target.files)
+    
+    const files = Array.from(e.target.files || [])
+    console.log('🔵 Files array:', files.length, files.map(f => ({ name: f.name, size: f.size, type: f.type })))
+    
+    if (files.length === 0) {
+      console.log('🔴 No files selected')
+      return
+    }
+
+    const item = reviewItems.find((i) => i.id === itemId)
+    if (!item) {
+      console.error('🔴 Review item not found:', itemId, 'Available items:', reviewItems.map(i => i.id))
+      return
+    }
+
+    console.log('🟢 Processing', files.length, 'file(s) for item:', itemId)
+
+    // Set uploading state for each file
+    const fileStatus: Record<string, 'uploading' | 'success' | 'error'> = {}
+    files.forEach(file => {
+      fileStatus[file.name] = 'uploading'
+    })
+    setUploadedFileStatus(prev => ({
+      ...prev,
+      [itemId]: { ...prev[itemId], ...fileStatus }
+    }))
+    setUploadingFiles(prev => ({ ...prev, [itemId]: true }))
+
+    // Update uploaded files state IMMEDIATELY so UI shows loading state
+    setUploadedFiles((prev) => {
+      const newFiles = [...(prev[itemId] || []), ...files]
+      console.log('🟢 Setting uploaded files state:', newFiles.length, 'files for item:', itemId)
+      return {
+        ...prev,
+        [itemId]: newFiles,
+      }
+    })
+
+    // Process files - Excel data stored for LLM context but NOT shown in chat
+    const newChatMessages: Array<{
+      sender: 'user' | 'agent' | 'system'
+      text: string
+      timestamp: Date
+      excelData?: string
+      uploadedFileName?: string
+    }> = []
+
+    for (const file of files) {
+      try {
+        if (isExcelFile(file)) {
+          const excelText = await parseExcelFile(file)
+          // Show simple upload message (NOT the full Excel content)
+          // Excel data is stored in excelData field for LLM context
+          newChatMessages.push({
+            sender: 'system',
+            text: `📎 File "${file.name}" uploaded and ready for processing`,
+            excelData: excelText, // LLM will receive this as context
+            uploadedFileName: file.name,
+            timestamp: new Date(),
+          })
+          console.log(`🟢 Excel "${file.name}" processed - data available as LLM context`)
+          // Mark as success
+          setUploadedFileStatus(prev => ({
+            ...prev,
+            [itemId]: { ...prev[itemId], [file.name]: 'success' }
+          }))
+        } else {
+          // For non-Excel files, just add a message
+          newChatMessages.push({
+            sender: 'system',
+            text: `📎 File "${file.name}" uploaded (${(file.size / 1024).toFixed(2)} KB)`,
+            uploadedFileName: file.name,
+            timestamp: new Date(),
+          })
+          // Mark as success
+          setUploadedFileStatus(prev => ({
+            ...prev,
+            [itemId]: { ...prev[itemId], [file.name]: 'success' }
+          }))
+        }
+      } catch (error) {
+        console.error('Error processing file:', error)
+        newChatMessages.push({
+          sender: 'system',
+          text: `❌ Failed to process file "${file.name}": ${error instanceof Error ? error.message : 'Unknown error'}`,
+          uploadedFileName: file.name,
+          timestamp: new Date(),
+        })
+        // Mark as error
+        setUploadedFileStatus(prev => ({
+          ...prev,
+          [itemId]: { ...prev[itemId], [file.name]: 'error' }
+        }))
+      }
+    }
+
+    // Update review item with file upload messages
+    const updatedItem: ReviewItem = {
+      ...item,
+      chatHistory: [...(item.chatHistory || []), ...newChatMessages],
+    }
+
+    setReviewItems((prev) => prev.map((i) => (i.id === itemId ? updatedItem : i)))
+    setShowFileMenu((prev) => ({ ...prev, [itemId]: false }))
+    setUploadingFiles(prev => ({ ...prev, [itemId]: false }))
+    
+    // Reset the input value so the same file can be selected again if needed
+    // Do this after all processing is complete
+    setTimeout(() => {
+      e.target.value = ''
+    }, 100)
+    
+    // Clear file status after 3 seconds
+    setTimeout(() => {
+      setUploadedFileStatus(prev => {
+        const updated = { ...prev }
+        if (updated[itemId]) {
+          delete updated[itemId]
+        }
+        return updated
+      })
+    }, 3000)
   }
 
   const handleSendGuidance = (item: ReviewItem) => {
     const message = chatMessages[item.id]?.trim()
-    if (!message) return
+    const files = uploadedFiles[item.id] || []
+    
+    // Don't send if there's no message and no files
+    if (!message && files.length === 0) return
 
-    // Add user message to chat history
-    const updatedItem: ReviewItem = {
-      ...item,
-      chatHistory: [
-        ...(item.chatHistory || []),
-        {
-          sender: 'user',
-          text: message,
-          timestamp: new Date(),
-        },
-      ],
+    // Build chat history updates
+    const chatUpdates: Array<{
+      sender: 'user' | 'agent' | 'system'
+      text: string
+      timestamp: Date
+      excelData?: string
+      uploadedFileName?: string
+    }> = []
+
+    // Add text message if present
+    if (message) {
+      chatUpdates.push({
+        sender: 'user',
+        text: message,
+        timestamp: new Date(),
+      })
     }
 
+    // Add agent acknowledgment message
+    const hasFiles = files.length > 0 || (uploadedFiles[item.id] && uploadedFiles[item.id].length > 0)
+    const fileNames = files.map(f => f.name).join(', ')
+    const acknowledgmentText = hasFiles && message
+      ? `Received your guidance and ${files.length} file(s): ${fileNames}. Processing now...`
+      : hasFiles
+      ? `Received ${files.length} file(s): ${fileNames}. Analyzing the data...`
+      : `Received your guidance. Processing...`
+    
+    chatUpdates.push({
+      sender: 'agent',
+      text: acknowledgmentText,
+      timestamp: new Date(),
+    })
+
     // Update review item with new chat history
+    const updatedItem: ReviewItem = {
+      ...item,
+      chatHistory: [...(item.chatHistory || []), ...chatUpdates],
+    }
+
     setReviewItems((prev) => prev.map((i) => (i.id === item.id ? updatedItem : i)))
 
-    // Clear input
+    // Clear input and files
     setChatMessages((prev) => {
       const updated = { ...prev }
       updated[item.id] = ''
       return updated
     })
+    setUploadedFiles((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
+    setShowFileMenu((prev) => ({ ...prev, [item.id]: false }))
 
-    // Provide guidance to the agent
-    provideGuidanceToReviewItem(item.id, message)
+    // Provide guidance to the agent (include file data if available)
+    const guidanceText = message || 'Files uploaded'
+    provideGuidanceToReviewItem(item.id, guidanceText)
   }
 
   // Scroll chat to bottom when messages change
@@ -196,6 +408,22 @@ export default function Screen4ControlRoom() {
       chatEndRefs.current[expandedChatId]?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [expandedChatId, reviewItems])
+
+  // Close file menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      Object.keys(showFileMenu).forEach((itemId) => {
+        if (showFileMenu[itemId] && fileMenuRefs.current[itemId] && !fileMenuRefs.current[itemId]?.contains(event.target as Node)) {
+          setShowFileMenu((prev) => ({ ...prev, [itemId]: false }))
+        }
+      })
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showFileMenu])
 
   return (
     <div className="flex flex-col h-screen bg-white">
@@ -350,6 +578,36 @@ export default function Screen4ControlRoom() {
                         )}
                       </div>
 
+                      {/* File Upload Chips - Always visible above chat */}
+                      {uploadedFiles[item.id] && uploadedFiles[item.id].length > 0 && (
+                        <div className="mb-3">
+                          <FileUploadChips
+                            files={uploadedFiles[item.id]}
+                            uploadingFiles={uploadedFileStatus[item.id] || {}}
+                            onRemove={(idx) => {
+                              setUploadedFiles((prev) => ({
+                                ...prev,
+                                [item.id]: prev[item.id]?.filter((_, i) => i !== idx) || [],
+                              }))
+                              setUploadedFileStatus(prev => {
+                                const updated = { ...prev }
+                                if (updated[item.id]) {
+                                  const fileName = uploadedFiles[item.id]?.[idx]?.name
+                                  if (fileName) {
+                                    delete updated[item.id][fileName]
+                                    if (Object.keys(updated[item.id]).length === 0) {
+                                      delete updated[item.id]
+                                    }
+                                  }
+                                }
+                                return updated
+                              })
+                            }}
+                            variant="dark"
+                          />
+                        </div>
+                      )}
+
                       {/* Chat Interface */}
                       {isChatExpanded && (
                         <div className="mb-3 border-t border-gray-lighter pt-3">
@@ -370,13 +628,158 @@ export default function Screen4ControlRoom() {
                                   <div className="font-semibold mb-1">
                                     {msg.sender === 'user' ? 'You' : msg.sender === 'agent' ? item.digitalWorkerName : 'System'}
                                   </div>
-                                  <div>{msg.text}</div>
+                                  <div className="whitespace-pre-wrap">{msg.text}</div>
+                                  {msg.uploadedFileName && (
+                                    <div className="text-xs mt-1 text-gray-darker italic">
+                                      📎 {msg.uploadedFileName}
+                                    </div>
+                                  )}
                                 </div>
                               ))
                             )}
-                            <div ref={(el) => (chatEndRefs.current[item.id] = el)} />
+                            <div ref={(el) => { chatEndRefs.current[item.id] = el }} />
                           </div>
+                          
+                          {/* File chips removed from here - now shown above */}
+                          {false && uploadedFiles[item.id] && uploadedFiles[item.id].length > 0 && (
+                            <div className="flex flex-col gap-2 mb-2">
+                              {uploadedFiles[item.id].map((file, idx) => {
+                                const status = uploadedFileStatus[item.id]?.[file.name] || 'success'
+                                const isUploading = status === 'uploading'
+                                const isError = status === 'error'
+                                
+                                return (
+                                  <div
+                                    key={idx}
+                                    className={`relative rounded-lg transition-all ${
+                                      isUploading 
+                                        ? 'bg-gray-700 border border-gray-600' 
+                                        : isError
+                                        ? 'bg-red-900/20 border border-red-500/50'
+                                        : 'bg-gray-800 border border-gray-700'
+                                    }`}
+                                    style={{ 
+                                      padding: '12px 40px 12px 12px',
+                                      minHeight: '64px'
+                                    }}
+                                  >
+                                    <div className="flex items-start gap-3">
+                                      {/* File Icon */}
+                                      <div className={`flex-shrink-0 w-10 h-10 rounded flex items-center justify-center ${
+                                        isUploading 
+                                          ? 'bg-gray-600' 
+                                          : isError
+                                          ? 'bg-red-500/20'
+                                          : 'bg-green-500'
+                                      }`}>
+                                        {isUploading ? (
+                                          <Loader2 className="h-5 w-5 animate-spin text-white" />
+                                        ) : isError ? (
+                                          <XCircle className="h-5 w-5 text-red-500" />
+                                        ) : (
+                                          getFileIcon(file.name, false)
+                                        )}
+                                      </div>
+                                      
+                                      {/* File Info */}
+                                      <div className="flex-1 min-w-0">
+                                        <div className="text-sm font-medium text-white truncate">
+                                          {file.name}
+                                        </div>
+                                        <div className="text-xs text-gray-400 mt-0.5">
+                                          {getFileType(file.name)}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    
+                                    {/* Remove Button */}
+                                    {!isUploading && (
+                                      <button
+                                        onClick={() => {
+                                          setUploadedFiles((prev) => ({
+                                            ...prev,
+                                            [item.id]: prev[item.id]?.filter((_, i) => i !== idx) || [],
+                                          }))
+                                          // Also remove from status
+                                          setUploadedFileStatus(prev => {
+                                            const updated = { ...prev }
+                                            if (updated[item.id]) {
+                                              delete updated[item.id][file.name]
+                                              if (Object.keys(updated[item.id]).length === 0) {
+                                                delete updated[item.id]
+                                              }
+                                            }
+                                            return updated
+                                          })
+                                        }}
+                                        className="absolute top-2 right-2 w-6 h-6 rounded-full bg-gray-700 hover:bg-gray-600 flex items-center justify-center transition-colors"
+                                        title="Remove file"
+                                      >
+                                        <XCircle className="h-4 w-4 text-white" />
+                                      </button>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+
                           <div className="flex gap-2">
+                            {/* File Upload Button */}
+                            <div className="relative" ref={(el) => { fileMenuRefs.current[item.id] = el }}>
+                              <button
+                                onClick={() => setShowFileMenu((prev) => ({ ...prev, [item.id]: !prev[item.id] }))}
+                                className="p-2 hover:bg-gray-lighter rounded-md transition-colors"
+                                title="Upload file"
+                              >
+                                <Plus className="h-5 w-5 text-gray-darker" />
+                              </button>
+                              {showFileMenu[item.id] && (
+                                <div className="absolute bottom-full left-0 mb-2 bg-white border border-gray-lighter rounded-md shadow-lg z-10">
+                                  <label 
+                                    htmlFor={`file-upload-${item.id}`}
+                                    className="block w-full px-4 py-2 text-sm text-gray-dark hover:bg-gray-lighter cursor-pointer"
+                                    onClick={(e) => {
+                                      console.log('🟢 Label clicked for item:', item.id)
+                                      // Programmatically trigger file input click as backup
+                                      setTimeout(() => {
+                                        const input = document.getElementById(`file-upload-${item.id}`) as HTMLInputElement
+                                        if (input && !input.files || input.files?.length === 0) {
+                                          console.log('🟢 Triggering input click programmatically')
+                                          input.click()
+                                        }
+                                      }, 10)
+                                    }}
+                                  >
+                                    <Upload className="h-4 w-4 inline mr-2" />
+                                    Upload File
+                                  </label>
+                                  <input
+                                    id={`file-upload-${item.id}`}
+                                    type="file"
+                                    multiple
+                                    className="hidden"
+                                    onChange={(e) => {
+                                      console.log('🟡 File input onChange triggered for item:', item.id)
+                                      console.log('🟡 Event target:', e.target)
+                                      console.log('🟡 Files:', e.target.files)
+                                      console.log('🟡 Files length:', e.target.files?.length)
+                                      if (e.target.files && e.target.files.length > 0) {
+                                        console.log('🟡 Calling handleFileUpload with', e.target.files.length, 'files')
+                                        handleFileUpload(item.id, e)
+                                      } else {
+                                        console.log('🟡 No files in onChange event')
+                                      }
+                                    }}
+                                    onClick={(e) => {
+                                      console.log('🟣 File input clicked directly')
+                                      e.stopPropagation()
+                                    }}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                            
                             <input
                               type="text"
                               value={chatMessages[item.id] || ''}
@@ -395,7 +798,7 @@ export default function Screen4ControlRoom() {
                               variant="primary"
                               size="sm"
                               onClick={() => handleSendGuidance(item)}
-                              disabled={!chatMessages[item.id]?.trim()}
+                              disabled={!chatMessages[item.id]?.trim() && (!uploadedFiles[item.id] || uploadedFiles[item.id].length === 0)}
                             >
                               <Send className="h-4 w-4" />
                             </Button>

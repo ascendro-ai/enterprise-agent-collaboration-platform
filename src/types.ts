@@ -38,6 +38,8 @@ export interface StepRequirements {
     redList: string[]
     outstandingQuestions?: string[]
   }
+  generatedImages?: string[] // Array of image URLs/data URLs
+  excelData?: string // Excel data in text grid format
 }
 
 // Agent Configuration
@@ -76,6 +78,8 @@ export interface ConversationMessage {
   sender: 'user' | 'system'
   text: string
   timestamp?: Date
+  excelData?: string // Excel data in text grid format
+  imageUrl?: string // URL or data URL for generated images
 }
 
 export interface ConversationSession {
@@ -113,7 +117,13 @@ export interface ReviewItem {
     payload: unknown
   }
   timestamp: Date
-  chatHistory?: Array<{ sender: 'user' | 'agent' | 'system'; text: string; timestamp: Date }>
+  chatHistory?: Array<{ 
+    sender: 'user' | 'agent' | 'system'
+    text: string
+    timestamp: Date
+    excelData?: string // Excel data in text grid format
+    uploadedFileName?: string // Name of uploaded file
+  }>
   needsGuidance?: boolean // Flag to indicate if agent is requesting guidance
 }
 

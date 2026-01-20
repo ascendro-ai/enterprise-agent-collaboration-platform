@@ -1,20 +1,28 @@
-import { useState } from 'react'
-import { Workflow as WorkflowIcon, CheckCircle, AlertCircle } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { Workflow as WorkflowIcon, CheckCircle, AlertCircle, Send, User, RefreshCw, ArrowRightLeft } from 'lucide-react'
 import { useWorkflows } from '../contexts/WorkflowContext'
 import { checkWorkflowReadiness } from '../services/workflowReadinessService'
+import { modifyWorkflowWithChat } from '../services/geminiService'
 import WorkflowFlowchart from './WorkflowFlowchart'
 import RequirementsGatherer from './RequirementsGatherer'
 import Button from './ui/Button'
 import Card from './ui/Card'
 import Modal from './ui/Modal'
+import Input from './ui/Input'
 
 export default function Screen3Workflows() {
-  const { workflows, activateWorkflow } = useWorkflows()
+  const { workflows, activateWorkflow, updateWorkflow } = useWorkflows()
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const [isRequirementsMode, setIsRequirementsMode] = useState(false)
   const [showActivationModal, setShowActivationModal] = useState(false)
   const [activationMessage, setActivationMessage] = useState<{ type: 'success' | 'error'; title: string; message: string; errors?: string[] } | null>(null)
+  
+  // Workflow Architect Chat state
+  const [chatInput, setChatInput] = useState('')
+  const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'system'; text: string }>>([])
+  const [isChatLoading, setIsChatLoading] = useState(false)
+  const chatEndRef = useRef<HTMLDivElement>(null)
 
   const selectedWorkflow = selectedWorkflowId
     ? workflows.find((w) => w.id === selectedWorkflowId)
@@ -33,6 +41,63 @@ export default function Screen3Workflows() {
   const handleBackFromRequirements = () => {
     setIsRequirementsMode(false)
     setSelectedStepId(null)
+  }
+
+  // Scroll chat to bottom when messages change
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages])
+
+  // Reset chat when workflow changes
+  useEffect(() => {
+    setChatMessages([])
+    setChatInput('')
+  }, [selectedWorkflowId])
+
+  const handleChatSend = async () => {
+    if (!chatInput.trim() || isChatLoading || !selectedWorkflow) return
+
+    const userMessage = chatInput.trim()
+    setChatInput('')
+    setChatMessages(prev => [...prev, { sender: 'user', text: userMessage }])
+    setIsChatLoading(true)
+
+    try {
+      const { response, updatedWorkflow } = await modifyWorkflowWithChat(
+        selectedWorkflow,
+        userMessage,
+        chatMessages
+      )
+
+      setChatMessages(prev => [...prev, { sender: 'system', text: response }])
+
+      if (updatedWorkflow) {
+        updateWorkflow(updatedWorkflow.id, {
+          name: updatedWorkflow.name,
+          description: updatedWorkflow.description,
+          steps: updatedWorkflow.steps,
+        })
+      }
+    } catch (error) {
+      console.error('Error in workflow chat:', error)
+      setChatMessages(prev => [...prev, { 
+        sender: 'system', 
+        text: `Sorry, I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.` 
+      }])
+    } finally {
+      setIsChatLoading(false)
+    }
+  }
+
+  const handleChatKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleChatSend()
+    }
+  }
+
+  const handleQuickAction = (action: string) => {
+    setChatInput(action)
   }
 
   const handleActivate = () => {
@@ -164,12 +229,113 @@ export default function Screen3Workflows() {
             </div>
 
             {/* Flowchart */}
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-y-auto min-h-0">
               <WorkflowFlowchart
                 steps={selectedWorkflow.steps}
                 selectedStepId={selectedStepId || undefined}
                 onStepClick={handleStepClick}
               />
+            </div>
+
+            {/* Workflow Architect Chat */}
+            <div className="border-t border-gray-lighter bg-gray-50">
+              {/* Quick Action Cards */}
+              {chatMessages.length === 0 && (
+                <div className="p-4 flex gap-3 overflow-x-auto">
+                  <button
+                    onClick={() => handleQuickAction('Change step 2 to be handled by a human instead of AI')}
+                    className="flex-shrink-0 flex items-center gap-3 px-4 py-3 bg-white border border-gray-200 rounded-lg hover:border-gray-300 hover:shadow-sm transition-all text-left"
+                  >
+                    <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center">
+                      <User className="h-5 w-5 text-blue-500" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-gray-800">Change Step to Human</div>
+                      <div className="text-xs text-gray-500">Reassign a step to human worker</div>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => handleQuickAction('Reorganize the workflow steps to be more efficient')}
+                    className="flex-shrink-0 flex items-center gap-3 px-4 py-3 bg-white border border-gray-200 rounded-lg hover:border-gray-300 hover:shadow-sm transition-all text-left"
+                  >
+                    <div className="w-10 h-10 bg-purple-50 rounded-lg flex items-center justify-center">
+                      <ArrowRightLeft className="h-5 w-5 text-purple-500" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-gray-800">Change Flow Steps</div>
+                      <div className="text-xs text-gray-500">Reorder or modify step sequence</div>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => handleQuickAction('Add a review step before the final step')}
+                    className="flex-shrink-0 flex items-center gap-3 px-4 py-3 bg-white border border-gray-200 rounded-lg hover:border-gray-300 hover:shadow-sm transition-all text-left"
+                  >
+                    <div className="w-10 h-10 bg-green-50 rounded-lg flex items-center justify-center">
+                      <RefreshCw className="h-5 w-5 text-green-500" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-gray-800">Add Review Step</div>
+                      <div className="text-xs text-gray-500">Insert approval checkpoint</div>
+                    </div>
+                  </button>
+                </div>
+              )}
+
+              {/* Chat Messages */}
+              {chatMessages.length > 0 && (
+                <div className="max-h-40 overflow-y-auto p-4 space-y-3">
+                  {chatMessages.map((msg, idx) => (
+                    <div
+                      key={idx}
+                      className={`flex ${
+                        msg.sender === 'user' ? 'justify-end' : 'justify-start'
+                      }`}
+                    >
+                      <div
+                        className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                          msg.sender === 'user'
+                            ? 'bg-gray-lighter text-gray-dark'
+                            : 'bg-gray-light text-gray-dark'
+                        }`}
+                      >
+                        <p className="text-sm">{msg.text}</p>
+                      </div>
+                    </div>
+                  ))}
+                  {isChatLoading && (
+                    <div className="flex justify-start">
+                      <div className="flex gap-1 px-4 py-2">
+                        <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                        <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                        <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+              )}
+
+              {/* Chat Input */}
+              <div className="p-4 pt-0">
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyPress={handleChatKeyPress}
+                    placeholder="Message Workflow Architect..."
+                    disabled={isChatLoading}
+                    className="flex-1"
+                  />
+                  <Button
+                    variant="primary"
+                    onClick={handleChatSend}
+                    disabled={!chatInput.trim() || isChatLoading}
+                    className="px-3"
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
             </div>
           </>
         )}

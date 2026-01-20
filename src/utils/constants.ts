@@ -10,7 +10,8 @@ export const STORAGE_KEYS = {
 
 // Gemini API Configuration
 export const GEMINI_CONFIG = {
-  MODEL: 'gemini-3-pro-preview', // Using latest Gemini 3 Pro model (highest capabilities, better reasoning)
+  MODEL: 'gemini-3-flash-preview', // Using Gemini 3 Flash Preview for faster testing (lower latency, latest generation)
+  IMAGE_MODEL: 'gemini-3-flash-preview', // Gemini 3 Flash Preview supports image generation with responseModalities
   MAX_QUESTIONS: 5,
   TEMPERATURE: 0.7,
 } as const

@@ -27,6 +27,19 @@ const defaultDigitalWorker: NodeData = {
 export function TeamProvider({ children }: { children: ReactNode }) {
   const [team, setTeamState] = useState<NodeData[]>([])
 
+  // Define ensureDefaultDigitalWorker first so it can be used in useEffect
+  const ensureDefaultDigitalWorker = useCallback(() => {
+    setTeamState((prev) => {
+      const hasDefault = prev.some(
+        (n) => n.name === WORKFLOW_CONFIG.DEFAULT_DIGITAL_WORKER_NAME && n.type === 'ai'
+      )
+      if (!hasDefault) {
+        return [defaultDigitalWorker, ...prev]
+      }
+      return prev
+    })
+  }, [])
+
   // Load from localStorage on mount
   useEffect(() => {
     const savedTeam = storage.getTeam()
@@ -39,7 +52,7 @@ export function TeamProvider({ children }: { children: ReactNode }) {
       // Ensure default digital worker exists
       ensureDefaultDigitalWorker()
     }
-  }, [])
+  }, [ensureDefaultDigitalWorker])
 
   // Save to localStorage whenever team changes
   useEffect(() => {
@@ -118,18 +131,6 @@ export function TeamProvider({ children }: { children: ReactNode }) {
       (n) => n.name === WORKFLOW_CONFIG.DEFAULT_DIGITAL_WORKER_NAME && n.type === 'ai'
     )
   }, [team])
-
-  const ensureDefaultDigitalWorker = useCallback(() => {
-    setTeamState((prev) => {
-      const hasDefault = prev.some(
-        (n) => n.name === WORKFLOW_CONFIG.DEFAULT_DIGITAL_WORKER_NAME && n.type === 'ai'
-      )
-      if (!hasDefault) {
-        return [defaultDigitalWorker, ...prev]
-      }
-      return prev
-    })
-  }, [])
 
   return (
     <TeamContext.Provider

@@ -28,6 +28,128 @@ const getModel = () => {
   return genAI.getGenerativeModel({ model: GEMINI_CONFIG.MODEL })
 }
 
+// Workflow Architect Chat - Modify workflows via natural language
+export async function modifyWorkflowWithChat(
+  workflow: Workflow,
+  userMessage: string,
+  chatHistory: Array<{ sender: 'user' | 'system'; text: string }>
+): Promise<{ response: string; updatedWorkflow?: Workflow }> {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+
+  const model = getModel()
+  
+  const currentWorkflowJson = JSON.stringify({
+    name: workflow.name,
+    description: workflow.description,
+    steps: workflow.steps.map(s => ({
+      id: s.id,
+      label: s.label,
+      type: s.type,
+      order: s.order,
+      assignedTo: s.assignedTo,
+    })),
+  }, null, 2)
+
+  const conversationContext = chatHistory
+    .map(msg => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+    .join('\n')
+
+  const prompt = `You are a Workflow Architect assistant. Your job is to help users modify their workflows through natural language.
+
+CURRENT WORKFLOW:
+${currentWorkflowJson}
+
+PREVIOUS CONVERSATION:
+${conversationContext}
+
+USER REQUEST:
+${userMessage}
+
+INSTRUCTIONS:
+1. Understand what the user wants to change about the workflow
+2. If the user wants to modify the workflow, return a JSON response with the updated workflow
+3. If the user is just asking a question, answer it without modifying the workflow
+4. Be helpful and conversational
+
+VALID MODIFICATIONS:
+- Change a step's assignment from AI to Human or vice versa
+- Add new steps
+- Remove steps
+- Reorder steps
+- Rename steps
+- Change step types (trigger, action, decision, end)
+- Update the workflow name or description
+
+RESPONSE FORMAT:
+If modifying the workflow, respond with:
+{
+  "response": "Your conversational response explaining what was changed",
+  "workflow": { ... the updated workflow object ... }
+}
+
+If NOT modifying the workflow (just answering a question), respond with:
+{
+  "response": "Your conversational response"
+}
+
+IMPORTANT:
+- Always maintain valid step IDs (use existing IDs when updating, generate new ones like "step-N" for new steps)
+- Keep the order field sequential starting from 0
+- First step should be type "trigger", last step should be type "end"
+- Return ONLY valid JSON, no markdown code blocks`
+
+  try {
+    const result = await model.generateContent(prompt)
+    const responseText = result.response.text().trim()
+    
+    // Parse JSON response
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      return { response: responseText }
+    }
+    
+    const parsed = JSON.parse(jsonMatch[0])
+    
+    if (parsed.workflow) {
+      // Reconstruct the workflow with the updated data
+      const updatedWorkflow: Workflow = {
+        ...workflow,
+        name: parsed.workflow.name || workflow.name,
+        description: parsed.workflow.description || workflow.description,
+        steps: parsed.workflow.steps.map((s: any, index: number) => ({
+          id: s.id || `step-${index + 1}`,
+          label: s.label,
+          type: s.type,
+          order: s.order ?? index,
+          assignedTo: s.assignedTo || { type: 'ai' },
+          requirements: workflow.steps.find(ws => ws.id === s.id)?.requirements,
+        })),
+        updatedAt: new Date(),
+      }
+      
+      return {
+        response: parsed.response,
+        updatedWorkflow,
+      }
+    }
+    
+    return { response: parsed.response || responseText }
+  } catch (error) {
+    console.error('Error modifying workflow:', error)
+    throw new Error(`Failed to process workflow modification: ${error instanceof Error ? error.message : 'Unknown error'}`)
+  }
+}
+
+// Get image generation model
+export const getImageModel = () => {
+  if (!genAI) {
+    throw new Error('Gemini API key is not configured')
+  }
+  return genAI.getGenerativeModel({ model: GEMINI_CONFIG.IMAGE_MODEL })
+}
+
 // Consultant chat - asks 3-5 questions to understand workflow
 export async function consultWorkflow(
   conversationHistory: ConversationMessage[],
@@ -480,14 +602,34 @@ ${conversationText ? `Conversation:\n${conversationText}` : 'Use only the Create
 
     const jsonMatch = response.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
-      throw new Error('Failed to parse requirements')
+      console.warn('⚠️ buildAutomation: No JSON found in LLM response, using fallback')
+      // Return empty but valid structure - user can refine through chat
+      return {
+        requirementsText: step.label || 'Requirements to be defined',
+        blueprint: {
+          greenList: [],
+          redList: [],
+          outstandingQuestions: ['What specific actions should be taken for this step?'],
+        },
+        customRequirements: [],
+      }
     }
 
     let data
     try {
       data = JSON.parse(jsonMatch[0])
     } catch (parseError) {
-      throw new Error('Failed to parse requirements JSON')
+      console.warn('⚠️ buildAutomation: Failed to parse JSON, using fallback:', parseError)
+      // Return empty but valid structure - user can refine through chat
+      return {
+        requirementsText: step.label || 'Requirements to be defined',
+        blueprint: {
+          greenList: [],
+          redList: [],
+          outstandingQuestions: ['What specific actions should be taken for this step?'],
+        },
+        customRequirements: [],
+      }
     }
 
     return {
@@ -501,7 +643,16 @@ ${conversationText ? `Conversation:\n${conversationText}` : 'Use only the Create
     }
   } catch (error) {
     console.error('Error building automation:', error)
-    throw new Error('Failed to build automation requirements')
+    // Return fallback instead of throwing - allows user to continue
+    return {
+      requirementsText: step.label || 'Requirements to be defined',
+      blueprint: {
+        greenList: [],
+        redList: [],
+        outstandingQuestions: ['What specific actions should be taken for this step?'],
+      },
+      customRequirements: [],
+    }
   }
 }
 
