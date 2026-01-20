@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
 import { WorkflowStep } from '../types'
-import { Circle } from 'lucide-react'
+import { Circle, User } from 'lucide-react'
 
 interface WorkflowFlowchartProps {
   steps: WorkflowStep[]
   selectedStepId?: string
   onStepClick?: (stepId: string) => void
+  onHumanAssign?: (stepId: string) => void  // Callback when clicking to assign human
 }
 
 const CARD_WIDTH = 240
@@ -119,6 +120,7 @@ export default function WorkflowFlowchart({
   steps,
   selectedStepId,
   onStepClick,
+  onHumanAssign,
 }: WorkflowFlowchartProps) {
   const sortedSteps = [...steps].sort((a, b) => a.order - b.order)
   const [hoveredStepId, setHoveredStepId] = useState<string | null>(null)
@@ -341,9 +343,9 @@ export default function WorkflowFlowchart({
                 return
               }
               
-              // Human-assigned action/decision steps: do nothing (no requirements gathering)
+              // Human-assigned action/decision steps: open human assignment picker
               if (step.assignedTo?.type === 'human') {
-                e.stopPropagation()
+                onHumanAssign?.(step.id)
                 return
               }
               
@@ -407,32 +409,40 @@ export default function WorkflowFlowchart({
               {/* Step label */}
               <div className="flex-1 flex items-center">
                 <p
-                  className="text-sm font-medium leading-tight line-clamp-3"
+                  className="text-sm font-medium leading-tight line-clamp-2"
                   style={{ color: styles.color || '#111827' }}
                 >
                   {step.label}
                 </p>
               </div>
+
+              {/* Human assignment indicator (only for human-assigned steps) */}
+              {step.assignedTo?.type === 'human' && step.type !== 'trigger' && step.type !== 'end' && (
+                <div 
+                  className="mt-2 pt-2 border-t border-gray-300/50 flex items-center gap-2 cursor-pointer hover:bg-white/30 rounded px-1 -mx-1 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onHumanAssign?.(step.id)
+                  }}
+                >
+                  <User className="w-3 h-3 text-gray-600" />
+                  {step.assignedTo.humanName ? (
+                    <span className="text-xs text-gray-700 font-medium truncate">
+                      {step.assignedTo.humanName}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-500 italic">
+                      Click to assign
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )
       })}
       </div>
 
-      {/* Legend */}
-      <div className="absolute bottom-4 right-4 bg-white border border-gray-lighter rounded-lg shadow-lg p-4 z-20 pointer-events-none">
-        <div className="text-xs font-semibold text-gray-darker mb-2">LEGEND</div>
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#C4D1E3' }}></div>
-            <span className="text-xs text-gray-dark">AI Assigned</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#F5C9B8' }}></div>
-            <span className="text-xs text-gray-dark">Human Assigned</span>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

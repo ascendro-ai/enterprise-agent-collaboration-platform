@@ -286,6 +286,88 @@ export default function Screen2OrgChart() {
       .x((d: any) => typeof d.x === 'number' ? d.x : 0) // Horizontal position (from D3 tree x)
       .y((d: any) => typeof d.y === 'number' ? d.y : 0) // Vertical position (from D3 tree y)
 
+    // Team colors for backgrounds
+    const teamColors: Record<string, { bg: string; border: string; text: string }> = {
+      default: { bg: '#F3F4F6', border: '#D1D5DB', text: '#6B7280' },
+    }
+    const colorPalette = [
+      { bg: '#EFF6FF', border: '#BFDBFE', text: '#1D4ED8' }, // Blue
+      { bg: '#F0FDF4', border: '#BBF7D0', text: '#15803D' }, // Green
+      { bg: '#FEF3C7', border: '#FDE68A', text: '#B45309' }, // Amber
+      { bg: '#FCE7F3', border: '#FBCFE8', text: '#BE185D' }, // Pink
+      { bg: '#EDE9FE', border: '#DDD6FE', text: '#7C3AED' }, // Purple
+      { bg: '#ECFEFF', border: '#A5F3FC', text: '#0E7490' }, // Cyan
+    ]
+    teams.forEach((team, index) => {
+      teamColors[team.id] = colorPalette[index % colorPalette.length]
+    })
+
+    // Draw team containers FIRST (behind everything)
+    const teamContainersGroup = container.append('g').attr('class', 'team-containers')
+    
+    // Group nodes by teamId
+    const nodesByTeam = new Map<string, any[]>()
+    treeData.descendants().forEach((node: any) => {
+      const teamId = node.data.teamId
+      if (teamId) {
+        if (!nodesByTeam.has(teamId)) {
+          nodesByTeam.set(teamId, [])
+        }
+        nodesByTeam.get(teamId)?.push(node)
+      }
+    })
+
+    // Draw a colored container for each team
+    nodesByTeam.forEach((teamNodes, teamId) => {
+      if (teamNodes.length === 0) return
+      
+      // Calculate bounding box for team nodes
+      const padding = 40
+      const minX = Math.min(...teamNodes.map((n: any) => n.x)) - 120 - padding
+      const maxX = Math.max(...teamNodes.map((n: any) => n.x)) + 120 + padding
+      const minY = Math.min(...teamNodes.map((n: any) => n.y)) - 50 - padding
+      const maxY = Math.max(...teamNodes.map((n: any) => n.y)) + 50 + padding
+      
+      const colors = teamColors[teamId] || teamColors.default
+      const team = teams.find(t => t.id === teamId)
+      const teamName = team?.name || teamId
+
+      // Draw background rectangle
+      teamContainersGroup
+        .append('rect')
+        .attr('x', minX)
+        .attr('y', minY)
+        .attr('width', maxX - minX)
+        .attr('height', maxY - minY)
+        .attr('rx', 16)
+        .attr('fill', colors.bg)
+        .attr('stroke', colors.border)
+        .attr('stroke-width', 2)
+        .attr('opacity', 0.8)
+
+      // Draw team name badge at top-left
+      const badgeWidth = teamName.length * 8 + 24
+      teamContainersGroup
+        .append('rect')
+        .attr('x', minX + 12)
+        .attr('y', minY + 12)
+        .attr('width', badgeWidth)
+        .attr('height', 24)
+        .attr('rx', 12)
+        .attr('fill', colors.border)
+      
+      teamContainersGroup
+        .append('text')
+        .attr('x', minX + 12 + badgeWidth / 2)
+        .attr('y', minY + 12 + 12)
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'middle')
+        .attr('font-size', '11px')
+        .attr('font-weight', '600')
+        .attr('fill', colors.text)
+        .text(teamName)
+    })
+
     // Create links - render BEFORE nodes so they appear behind
     container
       .append('g')
@@ -407,68 +489,61 @@ export default function Screen2OrgChart() {
         return d.data.role || ''
       })
 
-    // Add status badges for digital workers (matching workflow badge style)
-    // Position badges inside the white card on the right side
-    // Card is 200px wide (x: -100 to +100), positioned centered at node (x: 0)
+    // Add status badges for digital workers ABOVE the card (top-right corner)
+    // Card is 200px wide (x: -100 to +100), height 60px (y: -30 to +30)
     const digitalWorkerNodes = nodes.filter((d: any) => d.data.type !== 'human')
     
-    // Active badge - green background
+    // Active badge - green, positioned above card at top-right
     const activeNodes = digitalWorkerNodes.filter((d: any) => d.data.status === 'active')
     activeNodes.each(function() {
       const group = d3.select(this)
       
-      // Background rounded rectangle (badge) - positioned on right side of card
-      // Card right edge is at x: 100, badge width is 50px
-      // Position at x: 45 so it ends at x: 95 (5px margin from right edge)
+      // Badge positioned above card: y: -30 (card top) - 8 (gap) - 16 (badge height) = -54
       group
         .append('rect')
-        .attr('x', 45)
-        .attr('y', -10)
-        .attr('width', 50)
-        .attr('height', 20)
-        .attr('rx', 10)
+        .attr('x', 50)
+        .attr('y', -50)
+        .attr('width', 46)
+        .attr('height', 18)
+        .attr('rx', 9)
         .attr('fill', '#10B981')
         .attr('filter', 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1))')
       
-      // "Active" text - centered in badge (x: 45 + 25 = 70)
       group
         .append('text')
-        .attr('x', 70)
-        .attr('y', 0)
+        .attr('x', 73)
+        .attr('y', -41)
         .attr('text-anchor', 'middle')
         .attr('dominant-baseline', 'middle')
-        .attr('font-size', '10px')
+        .attr('font-size', '9px')
         .attr('font-weight', '600')
         .attr('fill', '#FFFFFF')
         .text('Active')
     })
     
-    // Inactive badge - grey background
+    // Inactive badge - grey, positioned above card at top-right
     const inactiveNodes = digitalWorkerNodes.filter((d: any) => d.data.status !== 'active')
     inactiveNodes.each(function() {
       const group = d3.select(this)
       
-      // Background rounded rectangle (badge) - positioned on right side of card
-      // Card right edge is at x: 100, badge width is 60px
-      // Position at x: 35 so it ends at x: 95 (5px margin from right edge)
+      // Badge positioned above card
       group
         .append('rect')
-        .attr('x', 35)
-        .attr('y', -10)
-        .attr('width', 60)
-        .attr('height', 20)
-        .attr('rx', 10)
+        .attr('x', 40)
+        .attr('y', -50)
+        .attr('width', 56)
+        .attr('height', 18)
+        .attr('rx', 9)
         .attr('fill', '#9CA3AF')
         .attr('filter', 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1))')
       
-      // "Inactive" text - centered in badge (x: 35 + 30 = 65)
       group
         .append('text')
-        .attr('x', 65)
-        .attr('y', 0)
+        .attr('x', 68)
+        .attr('y', -41)
         .attr('text-anchor', 'middle')
         .attr('dominant-baseline', 'middle')
-        .attr('font-size', '10px')
+        .attr('font-size', '9px')
         .attr('font-weight', '600')
         .attr('fill', '#FFFFFF')
         .text('Inactive')
@@ -772,103 +847,166 @@ export default function Screen2OrgChart() {
         <svg ref={svgRef} className="w-full h-full" />
       </div>
 
-      {/* Node Details Panel */}
+      {/* Node Details Panel - Digital Employee ID Card */}
       {selectedNode && (
-        <div className="absolute bottom-[200px] right-4 w-80 bg-white rounded-lg shadow-lg p-4 border border-gray-lighter z-10">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-dark">
-              {selectedNode.name === 'default' || selectedNode.name.toLowerCase().includes('default') 
-                ? 'Digi' 
-                : selectedNode.name}
-            </h3>
+        <div className="absolute bottom-[200px] right-4 w-80 bg-white border border-gray-200 rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow duration-200 z-10">
+          {/* Header - Avatar, Name/Role, Toggle */}
+          <div className="flex items-start gap-4 mb-4">
+            {/* Avatar with Status Dot */}
+            <div className="relative flex-shrink-0">
+              <div className={`h-12 w-12 rounded-full flex items-center justify-center text-white font-semibold text-lg ${
+                selectedNode.type === 'human' 
+                  ? 'bg-gradient-to-br from-amber-400 to-orange-500' 
+                  : 'bg-gradient-to-br from-indigo-500 to-purple-600'
+              }`}>
+                {getInitials(selectedNode.name === 'default' || selectedNode.name.toLowerCase().includes('default') 
+                  ? 'Digi' 
+                  : selectedNode.name)}
+              </div>
+              {/* Status Dot - bottom-right of avatar */}
+              <span className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-white ${
+                selectedNode.status === 'active' ? 'bg-green-500' : 'bg-gray-400'
+              }`} />
+            </div>
+
+            {/* Name & Role */}
+            <div className="flex-1 min-w-0">
+              <h3 className="text-lg font-bold text-gray-900 truncate">
+                {selectedNode.name === 'default' || selectedNode.name.toLowerCase().includes('default') 
+                  ? 'Digi' 
+                  : selectedNode.name}
+              </h3>
+              <p className="text-sm text-gray-500 truncate">
+                {selectedNode.type === 'human' 
+                  ? selectedNode.role || 'Team Member'
+                  : selectedNode.role || (selectedNode.name === 'default' || selectedNode.name.toLowerCase().includes('default')
+                    ? 'Default Digital Worker'
+                    : 'AI Assistant')}
+              </p>
+            </div>
+
+            {/* Toggle Switch */}
             <button
               onClick={() => handleToggleStatus(selectedNode.name)}
-              className="p-2 hover:bg-gray-lighter rounded transition-all"
+              className="flex-shrink-0 p-1 hover:bg-gray-100 rounded-lg transition-colors"
+              title={selectedNode.status === 'active' ? 'Disable' : 'Enable'}
             >
               {selectedNode.status === 'active' ? (
-                <ToggleRight className="h-6 w-6 text-green-600 transition-colors" />
+                <ToggleRight className="h-7 w-7 text-green-500" />
               ) : (
-                <ToggleLeft className="h-6 w-6 text-gray-darker transition-colors" />
+                <ToggleLeft className="h-7 w-7 text-gray-400" />
               )}
             </button>
           </div>
 
-          <div className="space-y-3">
-            <div>
-              <p className="text-xs text-gray-darker mb-1">Type</p>
-              <p className="text-sm font-medium text-gray-dark capitalize">{selectedNode.type}</p>
-            </div>
+          {/* Divider */}
+          <div className="border-t border-gray-100 my-4" />
 
-            {(selectedNode.role || (selectedNode.name === 'default' || selectedNode.name.toLowerCase().includes('default'))) && (
-              <div>
-                <p className="text-xs text-gray-darker mb-1">Role</p>
-                <p className="text-sm font-medium text-gray-dark">
-                  {selectedNode.name === 'default' || selectedNode.name.toLowerCase().includes('default')
-                    ? 'Default Digital Worker'
-                    : selectedNode.role}
-                </p>
-              </div>
+          {/* Body - Metadata Badges */}
+          <div className="flex flex-wrap gap-2 mb-4">
+            {/* Type Badge */}
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+              selectedNode.type === 'human' 
+                ? 'bg-amber-50 text-amber-700' 
+                : 'bg-indigo-50 text-indigo-700'
+            }`}>
+              {selectedNode.type === 'human' ? '👤 Human' : '🤖 AI Worker'}
+            </span>
+
+            {/* Team Badge */}
+            {selectedNode.teamId && (
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">
+                {teams.find(t => t.id === selectedNode.teamId)?.name || selectedNode.teamId}
+              </span>
             )}
 
-            <div>
-              <p className="text-xs text-gray-darker mb-1">Status</p>
-              <span
-                className={`inline-block px-2 py-1 text-xs rounded ${
-                  selectedNode.status === 'active'
-                    ? 'bg-green-100 text-green-800'
-                    : 'bg-gray-lighter text-gray-darker'
-                }`}
-              >
-                {selectedNode.status || 'inactive'}
-              </span>
-            </div>
+            {/* Status Badge */}
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+              selectedNode.status === 'active' 
+                ? 'bg-green-50 text-green-700' 
+                : 'bg-gray-100 text-gray-600'
+            }`}>
+              {selectedNode.status === 'active' ? '● Active' : '○ Inactive'}
+            </span>
+          </div>
 
-            {/* Workflow Assignment */}
-            <div>
-              <p className="text-xs text-gray-darker mb-2">Assign Workflow</p>
+          {/* Footer - Workflow Assignment */}
+          <div className="space-y-3">
+            {/* Assigned Workflows */}
+            {selectedNode.assignedWorkflows && selectedNode.assignedWorkflows.length > 0 ? (
+              <div className="space-y-2">
+                {selectedNode.assignedWorkflows.map((workflowId) => {
+                  const workflow = workflows.find((w) => w.id === workflowId)
+                  return workflow ? (
+                    <div
+                      key={workflowId}
+                      className="flex items-center gap-2 px-3 py-2.5 bg-indigo-50 border border-indigo-100 rounded-lg"
+                    >
+                      <div className="h-6 w-6 rounded bg-indigo-500 flex items-center justify-center">
+                        <svg className="h-3.5 w-3.5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                        </svg>
+                      </div>
+                      <span className="text-sm font-medium text-indigo-900 truncate flex-1">
+                        {workflow.name}
+                      </span>
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        workflow.status === 'active' 
+                          ? 'bg-green-100 text-green-700' 
+                          : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        {workflow.status === 'active' ? 'Running' : 'Draft'}
+                      </span>
+                    </div>
+                  ) : null
+                })}
+              </div>
+            ) : null}
+
+            {/* Assign Workflow - Select + Add Button */}
+            <div className="flex items-center gap-2">
               <select
                 value={selectedWorkflowId}
                 onChange={(e) => setSelectedWorkflowId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-lighter rounded-md text-sm mb-2"
+                className={`flex-1 px-3 py-2.5 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-colors ${
+                  (!selectedNode.assignedWorkflows || selectedNode.assignedWorkflows.length === 0)
+                    ? 'border-2 border-dashed border-gray-300 text-gray-500 hover:border-indigo-400'
+                    : 'border-gray-200 text-gray-600 bg-gray-50 hover:bg-white'
+                }`}
               >
-                <option value="">Select a workflow...</option>
+                <option value="">
+                  {(!selectedNode.assignedWorkflows || selectedNode.assignedWorkflows.length === 0)
+                    ? 'Select a workflow...'
+                    : '+ Add another workflow'}
+                </option>
                 {availableWorkflows.map((workflow) => (
                   <option key={workflow.id} value={workflow.id}>
                     {workflow.name} {workflow.status === 'draft' ? '(Draft)' : ''}
                   </option>
                 ))}
               </select>
-              <Button
-                variant="primary"
-                size="sm"
+              <button
                 onClick={handleWorkflowAssign}
                 disabled={!selectedWorkflowId}
-                className="w-full"
+                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
               >
-                Assign Workflow
-              </Button>
+                Add
+              </button>
             </div>
-
-            {/* Assigned Workflows */}
-            {selectedNode.assignedWorkflows && selectedNode.assignedWorkflows.length > 0 && (
-              <div>
-                <p className="text-xs text-gray-darker mb-2">Assigned Workflows</p>
-                <div className="space-y-1">
-                  {selectedNode.assignedWorkflows.map((workflowId) => {
-                    const workflow = workflows.find((w) => w.id === workflowId)
-                    return workflow ? (
-                      <div
-                        key={workflowId}
-                        className="px-2 py-1 bg-gray-lighter rounded text-xs text-gray-dark"
-                      >
-                        {workflow.name}
-                      </div>
-                    ) : null
-                  })}
-                </div>
-              </div>
+            {(!selectedNode.assignedWorkflows || selectedNode.assignedWorkflows.length === 0) && (
+              <p className="text-xs text-gray-400 text-center">Select a workflow and click Add to assign</p>
             )}
           </div>
+
+          {/* Close button - positioned outside card at top-right */}
+          <button
+            onClick={() => setSelectedNode(null)}
+            className="absolute -top-2 -right-2 h-6 w-6 bg-white border border-gray-200 rounded-full shadow-sm flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
       )}
 

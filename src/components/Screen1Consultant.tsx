@@ -225,6 +225,11 @@ export default function Screen1Consultant() {
       
       const { response, isComplete } = await consultWorkflow(messagesWithContext, questionCount)
 
+      // Validate response is not empty
+      if (!response || response.trim() === '') {
+        throw new Error('Received empty response from AI. Please try again.')
+      }
+
       const systemMessage: ConversationMessage = {
         sender: 'system',
         text: response,
@@ -308,6 +313,11 @@ export default function Screen1Consultant() {
         : newMessages
       
       const { response, isComplete } = await consultWorkflow(messagesWithContext, questionCount)
+
+      // Validate response is not empty
+      if (!response || response.trim() === '') {
+        throw new Error('Received empty response from AI. Please try again.')
+      }
 
       const systemMessage: ConversationMessage = {
         sender: 'system',

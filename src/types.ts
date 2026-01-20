@@ -22,6 +22,8 @@ export interface WorkflowStep {
   assignedTo?: {
     type: 'ai' | 'human'
     agentName?: string
+    humanId?: string    // ID of the human worker assigned (for human type)
+    humanName?: string  // Display name of the assigned human
   }
   order: number
   requirements?: StepRequirements
@@ -135,8 +137,13 @@ export interface ReviewItem {
     timestamp: Date
     excelData?: string // Excel data in text grid format
     uploadedFileName?: string // Name of uploaded file
+    imageUrl?: string // Image URL or data URL for previews
   }>
   needsGuidance?: boolean // Flag to indicate if agent is requesting guidance
+  // New fields for enhanced agent capabilities
+  requestedFileType?: 'excel' | 'image' | 'document' | 'any' // Hint for what file type agent needs
+  previewImageUrl?: string // Image to show for approval before proceeding
+  previewImageCaption?: string // Caption explaining the image
 }
 
 export interface CompletedItem {

@@ -120,6 +120,11 @@ function TriggerStepConfig({
             )
           ])
           
+          // Validate initial message is not empty
+          if (!initialMessage || initialMessage.trim() === '') {
+            throw new Error('Failed to get initial response from AI. Please try again.')
+          }
+          
           const systemMessage: ConversationMessage = {
             sender: 'system',
             text: initialMessage,
@@ -212,6 +217,11 @@ function TriggerStepConfig({
       // Update requirements text and blueprint silently
       setRequirementsText(configResult.requirementsText)
       setBlueprint(configResult.blueprint)
+      
+      // Validate response is not empty
+      if (!conversationalResponse || conversationalResponse.trim() === '') {
+        throw new Error('Received empty response from AI. Please try again.')
+      }
       
       // Add conversational response to chat
       const systemMessage: ConversationMessage = {
@@ -689,6 +699,11 @@ function EndStepConfig({
             )
           ])
           
+          // Validate initial message is not empty
+          if (!initialMessage || initialMessage.trim() === '') {
+            throw new Error('Failed to get initial response from AI. Please try again.')
+          }
+          
           const systemMessage: ConversationMessage = {
             sender: 'system',
             text: initialMessage,
@@ -781,6 +796,11 @@ function EndStepConfig({
       // Update requirements text and blueprint silently
       setRequirementsText(configResult.requirementsText)
       setBlueprint(configResult.blueprint)
+      
+      // Validate response is not empty
+      if (!conversationalResponse || conversationalResponse.trim() === '') {
+        throw new Error('Received empty response from AI. Please try again.')
+      }
       
       // Add conversational response to chat
       const systemMessage: ConversationMessage = {
@@ -1289,6 +1309,11 @@ export default function RequirementsGatherer({
               createTaskConversation?.messages
             )
           ])
+          
+          // Validate initial message is not empty
+          if (!initialMessage || initialMessage.trim() === '') {
+            throw new Error('Failed to get initial response from AI. Please try again.')
+          }
           
           const systemMessage: ConversationMessage = {
             sender: 'system',

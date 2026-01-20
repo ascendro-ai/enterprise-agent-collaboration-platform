@@ -7,12 +7,14 @@ interface WorkflowCanvasProps {
   workflow: Workflow | null
   selectedStepId: string | null
   onStepClick: (stepId: string) => void
+  onHumanAssign?: (stepId: string) => void
 }
 
 export default function WorkflowCanvas({
   workflow,
   selectedStepId,
   onStepClick,
+  onHumanAssign,
 }: WorkflowCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [zoom, setZoom] = useState(1)
@@ -41,10 +43,9 @@ export default function WorkflowCanvas({
     setPan({ x: 0, y: 0 })
   }, [])
 
-  // Handle wheel zoom
+  // Handle wheel zoom (note: can't preventDefault on passive wheel events)
   const handleWheel = useCallback((e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
-      e.preventDefault()
       const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP
       setZoom(prev => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev + delta)))
     }
@@ -136,6 +137,7 @@ export default function WorkflowCanvas({
             steps={workflow.steps}
             selectedStepId={selectedStepId || undefined}
             onStepClick={onStepClick}
+            onHumanAssign={onHumanAssign}
           />
         </div>
       </div>
@@ -173,6 +175,18 @@ export default function WorkflowCanvas({
         <span className="font-medium">{workflow.name}</span>
         <span className="mx-2 text-gray-300">•</span>
         <span>{workflow.steps.length} steps</span>
+      </div>
+
+      {/* Legend */}
+      <div className="absolute top-4 right-4 bg-white/80 backdrop-blur-sm rounded-lg px-3 py-2 shadow-sm flex items-center gap-4">
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded" style={{ backgroundColor: '#C4D1E3' }}></div>
+          <span className="text-xs text-gray-600">AI Worker</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded" style={{ backgroundColor: '#F5C9B8' }}></div>
+          <span className="text-xs text-gray-600">Human Worker</span>
+        </div>
       </div>
     </div>
   )

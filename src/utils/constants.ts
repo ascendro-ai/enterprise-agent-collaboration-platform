@@ -13,7 +13,7 @@ export const STORAGE_KEYS = {
 // Gemini API Configuration
 export const GEMINI_CONFIG = {
   MODEL: 'gemini-3-flash-preview', // Using Gemini 3 Flash Preview for faster testing (lower latency, latest generation)
-  IMAGE_MODEL: 'gemini-3-flash-preview', // Gemini 3 Flash Preview supports image generation with responseModalities
+  IMAGE_MODEL: 'gemini-3-pro-image-preview', // Nano Banana Pro - professional asset production with advanced reasoning
   MAX_QUESTIONS: 5,
   TEMPERATURE: 0.7,
 } as const

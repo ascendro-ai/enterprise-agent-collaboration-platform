@@ -145,6 +145,11 @@ export default function CanvasChat({
             
             const { response, isComplete } = await consultWorkflow(messagesWithContext, questionCount)
 
+            // Validate response is not empty
+            if (!response || response.trim() === '') {
+              throw new Error('Received empty response from AI. Please try again.')
+            }
+
             const systemMessage: ConversationMessage = {
               sender: 'system',
               text: response,
@@ -302,6 +307,11 @@ export default function CanvasChat({
       
       const { response, isComplete } = await consultWorkflow(messagesWithContext, questionCount)
 
+      // Validate response is not empty
+      if (!response || response.trim() === '') {
+        throw new Error('Received empty response from AI. Please try again.')
+      }
+
       const systemMessage: ConversationMessage = {
         sender: 'system',
         text: response,
@@ -347,9 +357,29 @@ export default function CanvasChat({
 
   return (
     <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg z-20">
+      {/* Collapse/Expand Toggle Header - Always at top when messages exist */}
+      {messages.length > 0 && (
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="w-full flex items-center justify-center gap-2 py-2 bg-gray-50 hover:bg-gray-100 border-b border-gray-200 transition-colors"
+        >
+          {isExpanded ? (
+            <>
+              <ChevronDown className="h-4 w-4 text-gray-500" />
+              <span className="text-sm text-gray-600">Hide conversation</span>
+            </>
+          ) : (
+            <>
+              <ChevronUp className="h-4 w-4 text-gray-500" />
+              <span className="text-sm text-gray-600">Show conversation ({messages.length} messages)</span>
+            </>
+          )}
+        </button>
+      )}
+
       {/* Mini Preview - Show last 1-2 messages when collapsed */}
       {!isExpanded && messages.length > 0 && (
-        <div className="px-4 py-2 border-b border-gray-100 bg-gray-50">
+        <div className="px-4 py-2 bg-white">
           <div className="max-w-3xl mx-auto space-y-2">
             {lastMessages.map((message, index) => (
               <div
@@ -360,7 +390,7 @@ export default function CanvasChat({
                   className={`max-w-[80%] rounded-lg px-3 py-1.5 ${
                     message.sender === 'user'
                       ? 'bg-gray-800 text-white'
-                      : 'bg-white text-gray-800 border border-gray-200'
+                      : 'bg-gray-100 text-gray-800'
                   }`}
                 >
                   <p className="text-xs whitespace-pre-wrap line-clamp-2">{message.text}</p>
@@ -382,7 +412,7 @@ export default function CanvasChat({
 
       {/* Expandable Message History */}
       {isExpanded && messages.length > 0 && (
-        <div className="max-h-64 overflow-y-auto p-4 border-b border-gray-100 bg-gray-50">
+        <div className="max-h-64 overflow-y-auto p-4 bg-white">
           <div className="max-w-3xl mx-auto space-y-3">
             {messages.map((message, index) => (
               <div
@@ -393,7 +423,7 @@ export default function CanvasChat({
                   className={`max-w-[80%] rounded-lg px-4 py-2 ${
                     message.sender === 'user'
                       ? 'bg-gray-800 text-white'
-                      : 'bg-white text-gray-800 border border-gray-200'
+                      : 'bg-gray-100 text-gray-800'
                   }`}
                 >
                   <p className="text-sm whitespace-pre-wrap">{message.text}</p>
@@ -422,27 +452,8 @@ export default function CanvasChat({
       )}
 
       {/* Chat Input Area */}
-      <div className="p-4">
+      <div className="p-4 border-t border-gray-100">
         <div className="max-w-3xl mx-auto">
-          {/* Expand/Collapse Toggle */}
-          {messages.length > 0 && (
-            <button
-              onClick={() => setIsExpanded(!isExpanded)}
-              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 mb-2 mx-auto"
-            >
-              {isExpanded ? (
-                <>
-                  <ChevronDown className="h-3 w-3" />
-                  Hide conversation
-                </>
-              ) : (
-                <>
-                  <ChevronUp className="h-3 w-3" />
-                  Show conversation ({messages.length} messages)
-                </>
-              )}
-            </button>
-          )}
 
           {/* File Upload Chips */}
           <FileUploadChips

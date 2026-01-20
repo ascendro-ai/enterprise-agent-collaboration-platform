@@ -432,11 +432,11 @@ Return ONLY plaintext JSON. Do not use markdown code blocks, formatting, or any 
 }
 
 IMPORTANT:
-- Always return a valid JSON object, even if workflow is incomplete
-- Create at least 2-3 steps based on what was discussed
+- Only extract workflow steps if the conversation contains actual workflow/task/process content
+- If the conversation is just greetings, introductions, or casual chat (like "hello", "hi", "how are you"), return an EMPTY steps array: { "name": "New Workflow", "steps": [] }
 - Use "trigger" for the first step, "action" for middle steps, "end" for the last step
 - Order should start at 0 and increment sequentially
-- If no clear workflow can be extracted, create a simple workflow with steps based on the conversation
+- Return valid JSON always
 
 Conversation:
 ${conversationText}`

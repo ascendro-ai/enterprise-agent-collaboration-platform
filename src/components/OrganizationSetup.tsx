@@ -93,22 +93,37 @@ export default function OrganizationSetup({ onComplete }: OrganizationSetupProps
   }
 
   const finalizeOrganization = async (teams: Team[]) => {
+    // Fun names for personal digital assistants
+    const personalAssistantNames = [
+      'Nova', 'Luna', 'Pixel', 'Echo', 'Spark', 'Blip', 'Dash', 'Gizmo', 
+      'Chip', 'Byte', 'Zip', 'Fizz', 'Brio', 'Zara', 'Juno', 'Vega',
+      'Cleo', 'Rex', 'Ivy', 'Max', 'Neo', 'Aria', 'Kai', 'Rio'
+    ]
+    
+    let personalNameIndex = 0
+    
     // Collect all unique employees and managers
     const allEmployees = new Set<string>()
     const allManagers = new Set<string>()
+    const employeeToTeam = new Map<string, string>() // Maps employee name to team ID
     
     teams.forEach(team => {
-      team.members.forEach(member => allEmployees.add(member))
+      team.members.forEach(member => {
+        allEmployees.add(member)
+        employeeToTeam.set(member, team.id)
+      })
       if (team.managerId) {
         allManagers.add(team.managerId)
-        // Manager is also an employee
         allEmployees.add(team.managerId)
+        employeeToTeam.set(team.managerId, team.id) // Managers also get team assignment
       }
     })
 
-    // Create human worker nodes for all employees
+    // Create human worker nodes for all employees (with teamId)
     allEmployees.forEach(employeeName => {
       const isManager = allManagers.has(employeeName)
+      const teamId = employeeToTeam.get(employeeName)
+      
       // Check if node already exists
       const existingNode = teamNodes.find(n => n.name === employeeName)
       if (!existingNode) {
@@ -118,48 +133,52 @@ export default function OrganizationSetup({ onComplete }: OrganizationSetupProps
           status: 'active',
           assignedWorkflows: [],
           role: isManager ? 'Manager' : 'Team Member',
+          teamId: teamId, // Every employee gets a team
         }
         addNode(humanWorker)
-      } else if (isManager && existingNode.role !== 'Manager') {
-        // Update role if needed
-        updateNode(employeeName, { role: 'Manager' })
+      } else {
+        // Update existing node with role and teamId
+        updateNode(employeeName, { 
+          role: isManager ? 'Manager' : existingNode.role,
+          teamId: teamId 
+        })
       }
     })
 
     // Set up parent-child relationships for team members
     teams.forEach(team => {
       if (team.managerId) {
-        // Set team members to report to their manager
         team.members.forEach(memberName => {
           if (memberName !== team.managerId) {
-            // Update node to set parentName
             updateNode(memberName, { parentName: team.managerId, teamId: team.id })
+          } else {
+            // Manager also gets teamId
+            updateNode(memberName, { teamId: team.id })
           }
         })
       }
     })
 
-    // Create digital workers for each team and update teams with worker IDs
-    const teamsWithWorkers = teams.map((team) => {
-      if (team.managerId) {
-        const digitalWorker: NodeData = {
-          name: `${team.name} Digital Worker`,
-          type: 'ai',
-          status: 'active',
-          assignedWorkflows: [],
-          parentName: team.managerId, // Reports to the team manager
-          teamId: team.id,
-        }
-        addNode(digitalWorker)
-        
-        // Return team with digital worker ID
-        return { ...team, digitalWorkerId: digitalWorker.name }
+    // Create personal digital workers for EVERY employee (default inactive)
+    allEmployees.forEach(employeeName => {
+      const teamId = employeeToTeam.get(employeeName)
+      const personalWorkerName = personalAssistantNames[personalNameIndex % personalAssistantNames.length]
+      personalNameIndex++
+      
+      const personalDigitalWorker: NodeData = {
+        name: personalWorkerName,
+        type: 'ai',
+        status: 'inactive', // All digital workers start inactive
+        assignedWorkflows: [],
+        role: `${employeeName}'s Assistant`,
+        parentName: employeeName, // Reports to their human
+        teamId: teamId,
       }
-      return team
+      addNode(personalDigitalWorker)
     })
 
-    // Save teams with digital worker IDs
-    setTeams(teamsWithWorkers)
+    // Save teams (no team-level digital workers, only personal assistants)
+    setTeams(teams)
 
     // Mark organization as set up
     setOrganizationSetup(true)
@@ -167,7 +186,7 @@ export default function OrganizationSetup({ onComplete }: OrganizationSetupProps
     // Show completion message
     const completionMessage: ConversationMessage = {
       sender: 'system',
-      text: `Perfect! I've set up your organization with ${teams.length} team(s) and created digital workers for each team. You're all set to start creating workflows!\n\nClick "Continue" to proceed.`,
+      text: `Perfect! I've set up your organization with ${teams.length} team(s) and created ${allEmployees.size} personal digital assistants (one for each team member).\n\nAll digital workers start inactive - you can enable them in the "Your Team" view.\n\nClick "Continue" to proceed.`,
       timestamp: new Date(),
     }
     setMessages((prev) => [...prev, completionMessage])

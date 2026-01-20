@@ -69,6 +69,11 @@ export default function Screen3Workflows() {
         chatMessages
       )
 
+      // Validate response is not empty
+      if (!response || response.trim() === '') {
+        throw new Error('Received empty response from AI. Please try again.')
+      }
+
       setChatMessages(prev => [...prev, { sender: 'system', text: response }])
 
       if (updatedWorkflow) {

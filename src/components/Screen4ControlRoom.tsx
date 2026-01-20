@@ -14,7 +14,7 @@ import Input from './ui/Input'
 export default function Screen4ControlRoom() {
   const { team, teams } = useTeam()
   const [selectedTeam, setSelectedTeam] = useState<string>('all')
-  const [watchingItems, setWatchingItems] = useState<Array<{ id: string; name: string; workflow: string }>>([])
+  const [watchingItems, setWatchingItems] = useState<Array<{ id: string; name: string; workflow: string; status?: string; statusMessage?: string }>>([])
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([])
   const [completedItems, setCompletedItems] = useState<CompletedItem[]>([])
   const [expandedChatId, setExpandedChatId] = useState<string | null>(null)
@@ -61,19 +61,50 @@ export default function Screen4ControlRoom() {
 
       switch (update.type) {
         case 'workflow_update':
-          // Add to watching/running
+          // Add to watching/running and track status
           if (update.data.digitalWorkerName) {
+            const action = update.data.action as { type?: string; payload?: any } | undefined
+            const isGeneratingImage = action?.type === 'image_generating'
+            
             setWatchingItems((prev) => {
-              const existing = prev.find((item) => item.name === update.data.digitalWorkerName)
-              if (existing) {
-                return prev
+              const existingIndex = prev.findIndex((item) => item.name === update.data.digitalWorkerName)
+              
+              if (existingIndex >= 0) {
+                // Update existing item with new status
+                const updated = [...prev]
+                updated[existingIndex] = {
+                  ...updated[existingIndex],
+                  status: isGeneratingImage ? 'generating_image' : updated[existingIndex].status,
+                  statusMessage: isGeneratingImage 
+                    ? `🎨 Generating image...` 
+                    : update.data.message?.includes('Image generated successfully')
+                    ? '✅ Image ready!'
+                    : updated[existingIndex].statusMessage,
+                }
+                // Clear status after a few seconds if it was a success message
+                if (update.data.message?.includes('Image generated successfully')) {
+                  setTimeout(() => {
+                    setWatchingItems(items => 
+                      items.map(item => 
+                        item.name === update.data.digitalWorkerName 
+                          ? { ...item, status: undefined, statusMessage: undefined }
+                          : item
+                      )
+                    )
+                  }, 3000)
+                }
+                return updated
               }
+              
+              // Add new item
               return [
                 ...prev,
                 {
                   id: `watching-${Date.now()}`,
                   name: update.data.digitalWorkerName || 'default',
                   workflow: update.data.workflowId,
+                  status: isGeneratingImage ? 'generating_image' : undefined,
+                  statusMessage: isGeneratingImage ? '🎨 Generating image...' : undefined,
                 },
               ]
             })
@@ -84,21 +115,38 @@ export default function Screen4ControlRoom() {
           // Add to needs review
           setReviewItems((prev) => {
             const action = update.data.action || { type: 'unknown', payload: {} }
-            const needsGuidance = action.type === 'guidance_requested' || 
-                                 (typeof action.payload === 'object' && 
-                                  action.payload !== null && 
-                                  'needsGuidance' in action.payload &&
-                                  (action.payload as any).needsGuidance === true)
+            const payload = (typeof action.payload === 'object' && action.payload !== null) 
+              ? action.payload as Record<string, unknown> 
+              : {}
             
-            // Add initial agent message if guidance is requested
-            const initialChatHistory = needsGuidance && action.type === 'guidance_requested' && 
-                                     typeof action.payload === 'object' && 
-                                     action.payload !== null &&
-                                     'message' in action.payload
+            const needsGuidance = action.type === 'guidance_requested' || 
+                                 action.type === 'file_upload_requested' ||
+                                 action.type === 'image_preview' ||
+                                 (payload.needsGuidance === true)
+            
+            // Extract file request and image preview fields from payload
+            const requestedFileType = payload.requestedFileType as 'excel' | 'image' | 'document' | 'any' | undefined
+            const fileDescription = payload.fileDescription as string | undefined
+            const previewImageUrl = payload.previewImageUrl as string | undefined
+            const previewImageCaption = payload.previewImageCaption as string | undefined
+            
+            // Build initial message based on action type
+            let initialMessage = ''
+            if (action.type === 'file_upload_requested' && fileDescription) {
+              initialMessage = `📁 ${fileDescription}`
+            } else if (action.type === 'image_preview' && previewImageCaption) {
+              initialMessage = `🖼️ ${previewImageCaption}`
+            } else if (payload.message) {
+              initialMessage = String(payload.message)
+            }
+            
+            // Add initial agent message
+            const initialChatHistory = initialMessage
               ? [{
                   sender: 'agent' as const,
-                  text: String(action.payload.message),
+                  text: initialMessage,
                   timestamp: update.data.timestamp,
+                  imageUrl: previewImageUrl, // Include image in chat if showing preview
                 }]
               : []
 
@@ -111,6 +159,10 @@ export default function Screen4ControlRoom() {
               timestamp: update.data.timestamp,
               needsGuidance,
               chatHistory: initialChatHistory,
+              // New fields for enhanced capabilities
+              requestedFileType,
+              previewImageUrl,
+              previewImageCaption,
             }
             return [...prev, newItem]
           })
@@ -144,13 +196,19 @@ export default function Screen4ControlRoom() {
   }, [])
 
   const handleApprove = (item: ReviewItem) => {
-    // Include chat history if available
-    const itemWithChat = {
-      ...item,
-      chatHistory: item.chatHistory || [],
-    }
-    approveReviewItem(itemWithChat)
-    setReviewItems((prev) => prev.filter((i) => i.id !== item.id))
+    // Get fresh state to avoid stale closure issues (e.g., after file upload)
+    setReviewItems((prev) => {
+      const freshItem = prev.find((i) => i.id === item.id)
+      if (freshItem) {
+        // Include chat history if available
+        const itemWithChat = {
+          ...freshItem,
+          chatHistory: freshItem.chatHistory || [],
+        }
+        approveReviewItem(itemWithChat)
+      }
+      return prev.filter((i) => i.id !== item.id)
+    })
     setExpandedChatId(null)
     setChatMessages((prev) => {
       const updated = { ...prev }
@@ -179,9 +237,51 @@ export default function Screen4ControlRoom() {
     })
   }
 
-  const handleReject = (item: ReviewItem) => {
-    rejectReviewItem(item)
-    setReviewItems((prev) => prev.filter((i) => i.id !== item.id))
+  // State for rejection feedback
+  const [rejectingItemId, setRejectingItemId] = useState<string | null>(null)
+  const [rejectionFeedback, setRejectionFeedback] = useState<Record<string, string>>({})
+
+  const handleReject = (item: ReviewItem, withFeedback: boolean = false) => {
+    // If this is an image preview and user wants to give feedback, show feedback input
+    if (item.previewImageUrl && !withFeedback && !rejectionFeedback[item.id]) {
+      setRejectingItemId(item.id)
+      return
+    }
+
+    // Get fresh state and include rejection feedback
+    setReviewItems((prev) => {
+      const freshItem = prev.find((i) => i.id === item.id)
+      if (freshItem) {
+        const feedback = rejectionFeedback[item.id]
+        if (feedback) {
+          // Add feedback to chat history and retry
+          const itemWithFeedback: ReviewItem = {
+            ...freshItem,
+            chatHistory: [
+              ...(freshItem.chatHistory || []),
+              {
+                sender: 'user',
+                text: `❌ Rejected with feedback: ${feedback}`,
+                timestamp: new Date(),
+              },
+            ],
+          }
+          // This will retry the step with feedback
+          rejectReviewItem(itemWithFeedback, true) // true = retry with feedback
+        } else {
+          // Just dismiss without retry
+          rejectReviewItem(freshItem, false)
+        }
+      }
+      return prev.filter((i) => i.id !== item.id)
+    })
+    
+    setRejectingItemId(null)
+    setRejectionFeedback((prev) => {
+      const updated = { ...prev }
+      delete updated[item.id]
+      return updated
+    })
     setExpandedChatId(null)
     setChatMessages((prev) => {
       const updated = { ...prev }
@@ -518,19 +618,27 @@ export default function Screen4ControlRoom() {
                     return name.substring(0, 2).toUpperCase()
                   }
                   
+                  const isGeneratingImage = item.status === 'generating_image'
+                  
                   return (
-                    <Card key={item.id} variant="elevated" className="p-4">
+                    <Card key={item.id} variant="elevated" className={`p-4 ${isGeneratingImage ? 'border-l-4 border-l-purple-500' : ''}`}>
                       <div className="flex items-center gap-4">
                         {/* Avatar */}
-                        <div className="flex-shrink-0">
-                          <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{
-                            backgroundColor: '#DBEAFE',
-                            border: '1px solid #93C5FD'
+                        <div className="flex-shrink-0 relative">
+                          <div className={`w-12 h-12 rounded-full flex items-center justify-center ${isGeneratingImage ? 'animate-pulse' : ''}`} style={{
+                            backgroundColor: isGeneratingImage ? '#E9D5FF' : '#DBEAFE',
+                            border: `1px solid ${isGeneratingImage ? '#A855F7' : '#93C5FD'}`
                           }}>
-                            <span className="text-sm font-semibold" style={{ color: '#3B82F6' }}>
+                            <span className="text-sm font-semibold" style={{ color: isGeneratingImage ? '#7C3AED' : '#3B82F6' }}>
                               {getInitials(item.name)}
                             </span>
                           </div>
+                          {/* Loading spinner overlay */}
+                          {isGeneratingImage && (
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <div className="w-14 h-14 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+                            </div>
+                          )}
                         </div>
                         
                         {/* Name and Role */}
@@ -538,20 +646,37 @@ export default function Screen4ControlRoom() {
                           <div className="font-semibold text-gray-dark text-sm">
                             {displayName}
                           </div>
-                          {displayRole && (
+                          {item.statusMessage ? (
+                            <div className="text-xs text-purple-600 mt-0.5 font-medium">
+                              {item.statusMessage}
+                            </div>
+                          ) : displayRole ? (
                             <div className="text-xs italic text-gray-darker mt-0.5">
                               {displayRole}
                             </div>
-                          )}
+                          ) : null}
                         </div>
                         
-                        {/* ACTIVE Badge */}
+                        {/* Status Badge */}
                         <div className="flex-shrink-0">
-                          <div className="px-3 py-1 rounded-full text-xs font-semibold text-white" style={{
-                            backgroundColor: '#10B981'
-                          }}>
-                            ACTIVE
-                          </div>
+                          {isGeneratingImage ? (
+                            <div className="px-3 py-1 rounded-full text-xs font-semibold text-white flex items-center gap-1.5" style={{
+                              backgroundColor: '#A855F7'
+                            }}>
+                              <div className="flex gap-0.5">
+                                <div className="w-1 h-1 bg-white rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                                <div className="w-1 h-1 bg-white rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                                <div className="w-1 h-1 bg-white rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                              </div>
+                              GENERATING
+                            </div>
+                          ) : (
+                            <div className="px-3 py-1 rounded-full text-xs font-semibold text-white" style={{
+                              backgroundColor: '#10B981'
+                            }}>
+                              ACTIVE
+                            </div>
+                          )}
                         </div>
                       </div>
                     </Card>
@@ -601,7 +726,20 @@ export default function Screen4ControlRoom() {
                             ERROR
                           </span>
                         )}
-                        {item.needsGuidance && (
+                        {item.requestedFileType && (
+                          <span className="px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-xs font-semibold flex items-center gap-1">
+                            <Upload className="h-3 w-3" />
+                            {item.requestedFileType === 'excel' ? 'EXCEL FILE' : 
+                             item.requestedFileType === 'image' ? 'IMAGE FILE' : 
+                             item.requestedFileType === 'document' ? 'DOCUMENT' : 'FILE'} NEEDED
+                          </span>
+                        )}
+                        {item.previewImageUrl && (
+                          <span className="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs font-semibold">
+                            🖼️ PREVIEW
+                          </span>
+                        )}
+                        {item.needsGuidance && !item.requestedFileType && !item.previewImageUrl && (
                           <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs font-semibold">
                             NEEDS GUIDANCE
                           </span>
@@ -624,6 +762,26 @@ export default function Screen4ControlRoom() {
                             : 'Action requires approval'
                         )}
                       </div>
+
+                      {/* Large Image Preview for Approval */}
+                      {item.previewImageUrl && (
+                        <div className="mb-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div className="text-xs font-semibold text-gray-darker mb-2">
+                            🖼️ Preview for Approval
+                          </div>
+                          <img 
+                            src={item.previewImageUrl} 
+                            alt="Preview for approval" 
+                            className="w-full rounded-lg border border-gray-300 shadow-sm"
+                            style={{ maxHeight: '300px', objectFit: 'contain' }}
+                          />
+                          {item.previewImageCaption && (
+                            <p className="text-xs text-gray-darker mt-2 italic">
+                              {item.previewImageCaption}
+                            </p>
+                          )}
+                        </div>
+                      )}
 
                       {/* File Upload Chips - Always visible above chat */}
                       {uploadedFiles[item.id] && uploadedFiles[item.id].length > 0 && (
@@ -676,6 +834,17 @@ export default function Screen4ControlRoom() {
                                     {msg.sender === 'user' ? 'You' : msg.sender === 'agent' ? item.digitalWorkerName : 'System'}
                                   </div>
                                   <div className="whitespace-pre-wrap">{msg.text}</div>
+                                  {/* Image Preview */}
+                                  {msg.imageUrl && (
+                                    <div className="mt-2">
+                                      <img 
+                                        src={msg.imageUrl} 
+                                        alt="Preview" 
+                                        className="max-w-full rounded-lg border border-gray-300 shadow-sm"
+                                        style={{ maxHeight: '200px' }}
+                                      />
+                                    </div>
+                                  )}
                                   {msg.uploadedFileName && (
                                     <div className="text-xs mt-1 text-gray-darker italic">
                                       📎 {msg.uploadedFileName}
@@ -853,6 +1022,49 @@ export default function Screen4ControlRoom() {
                         </div>
                       )}
 
+                      {/* Rejection Feedback Input (for image previews) */}
+                      {rejectingItemId === item.id && (
+                        <div className="mb-3 p-3 bg-red-50 rounded-lg border border-red-200">
+                          <div className="text-xs font-semibold text-red-700 mb-2">
+                            What should be changed?
+                          </div>
+                          <textarea
+                            value={rejectionFeedback[item.id] || ''}
+                            onChange={(e) => setRejectionFeedback(prev => ({ ...prev, [item.id]: e.target.value }))}
+                            placeholder="Describe what you'd like changed (e.g., 'Make the text larger', 'Use different colors')"
+                            className="w-full px-3 py-2 text-sm border border-red-200 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+                            rows={2}
+                          />
+                          <div className="flex gap-2 mt-2">
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={() => handleReject(item, true)}
+                              disabled={!rejectionFeedback[item.id]?.trim()}
+                              className="flex-1 bg-red-600 hover:bg-red-700"
+                            >
+                              <XCircle className="h-4 w-4 mr-1" />
+                              Reject & Retry
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                setRejectingItemId(null)
+                                setRejectionFeedback(prev => {
+                                  const updated = { ...prev }
+                                  delete updated[item.id]
+                                  return updated
+                                })
+                              }}
+                              className="flex-1"
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="flex gap-2">
                         <Button
                           variant="secondary"
@@ -863,8 +1075,8 @@ export default function Screen4ControlRoom() {
                           <MessageSquare className="h-4 w-4 mr-1" />
                           {isChatExpanded ? 'Hide Chat' : 'Chat'}
                         </Button>
-                        {/* Only show Approve/Reject when chat is NOT expanded */}
-                        {!isChatExpanded && (
+                        {/* Only show Approve/Reject when chat is NOT expanded and not in rejection mode */}
+                        {!isChatExpanded && rejectingItemId !== item.id && (
                           <>
                             {isError ? (
                               <>
@@ -905,7 +1117,7 @@ export default function Screen4ControlRoom() {
                                   className="flex-1"
                                 >
                                   <XCircle className="h-4 w-4 mr-1" />
-                                  Reject
+                                  {item.previewImageUrl ? 'Reject & Edit' : 'Reject'}
                                 </Button>
                               </>
                             )}

@@ -8,6 +8,7 @@ import {
   logErrorOrBlocker,
 } from './activityLogService'
 import { executeAgentAction } from './agentExecutionService'
+import { generateImage } from './imageGenerationService'
 import type { Workflow, ControlRoomUpdate, ReviewItem, WorkflowStep } from '../types'
 
 // Execution state
@@ -337,11 +338,100 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
     // Log step completion
     logWorkflowStepComplete(workflowId, step.id, step.label, digitalWorkerName, stepDuration)
 
-    // Check if agent needs guidance
+    // Check if agent requested image generation
+    const generateImageAction = result.actions.find(a => a.type === 'generate_image')
+    let generatedImageUrl: string | undefined
+    
+    if (generateImageAction && generateImageAction.parameters?.imagePrompt) {
+      console.log(`🎨 [Agent Execution] Generating image: ${generateImageAction.parameters.imagePrompt}`)
+      logTrace(workflowId, `Generating image for step ${step.label}`)
+      
+      // Emit loading state for image generation
+      emitControlRoomUpdate({
+        type: 'workflow_update',
+        data: {
+          workflowId,
+          stepId: step.id,
+          digitalWorkerName,
+          message: `🎨 Generating image... This may take a moment.`,
+          action: {
+            type: 'image_generating',
+            payload: {
+              step: step.label,
+              prompt: generateImageAction.parameters.imagePrompt.substring(0, 100) + '...',
+            },
+          },
+          timestamp: new Date(),
+        },
+      })
+      
+      try {
+        // Get Excel data from guidance context if available
+        const excelData = state?.guidanceContext?.find(g => g.stepId === step.id)
+          ?.chatHistory.find(m => 'excelData' in m && m.excelData)?.excelData as string | undefined
+        
+        generatedImageUrl = await generateImage(generateImageAction.parameters.imagePrompt, excelData)
+        console.log(`✅ [Agent Execution] Image generated successfully`)
+        
+        // Emit success state
+        emitControlRoomUpdate({
+          type: 'workflow_update',
+          data: {
+            workflowId,
+            stepId: step.id,
+            digitalWorkerName,
+            message: `✅ Image generated successfully!`,
+            timestamp: new Date(),
+          },
+        })
+        
+        // Check if agent wants to show the image for approval
+        const showPreviewAction = result.actions.find(a => a.type === 'show_image_preview')
+        if (showPreviewAction || result.previewImageCaption) {
+          // Override the result to show the generated image for approval
+          result.needsGuidance = true
+          result.previewImageUrl = generatedImageUrl
+          result.previewImageCaption = showPreviewAction?.parameters?.imageCaption || 
+            result.previewImageCaption || 
+            'Please review this generated image and approve or provide feedback'
+        }
+      } catch (imageError) {
+        console.error(`❌ [Agent Execution] Failed to generate image:`, imageError)
+        logTrace(workflowId, `Failed to generate image: ${imageError instanceof Error ? imageError.message : 'Unknown error'}`)
+        
+        // Emit error state
+        emitControlRoomUpdate({
+          type: 'workflow_update',
+          data: {
+            workflowId,
+            stepId: step.id,
+            digitalWorkerName,
+            message: `❌ Failed to generate image: ${imageError instanceof Error ? imageError.message : 'Unknown error'}`,
+            timestamp: new Date(),
+          },
+        })
+        // Don't fail the whole step, just log the error
+      }
+    }
+
+    // Check if agent needs guidance or wants to show something for review
     if (result.needsGuidance) {
-      console.log(`💬 [Agent Execution] Agent requested guidance: ${result.guidanceQuestion}`)
       const guidanceQuestion = result.guidanceQuestion || `Agent needs guidance for step: ${step.label}`
-      logTrace(workflowId, `Is requesting guidance for step ${step.label}. The agent needs to know: ${guidanceQuestion}`)
+      
+      // Determine what type of request this is
+      const hasFileRequest = result.requestedFileType || result.fileDescription
+      const hasImagePreview = result.previewImageUrl || result.previewImageCaption
+      
+      if (hasFileRequest) {
+        console.log(`📁 [Agent Execution] Agent requesting file upload: ${result.requestedFileType} - ${result.fileDescription}`)
+        logTrace(workflowId, `Is requesting file upload for step ${step.label}. Type: ${result.requestedFileType}`)
+      } else if (hasImagePreview) {
+        console.log(`🖼️ [Agent Execution] Agent showing image for approval: ${result.previewImageCaption}`)
+        logTrace(workflowId, `Is showing image preview for step ${step.label}`)
+      } else {
+        console.log(`💬 [Agent Execution] Agent requested guidance: ${guidanceQuestion}`)
+        logTrace(workflowId, `Is requesting guidance for step ${step.label}. The agent needs to know: ${guidanceQuestion}`)
+      }
       
       // Stop execution and request guidance
       if (state) {
@@ -354,19 +444,25 @@ async function executeAgentStep(workflowId: string, step: WorkflowStep): Promise
         data: {
           workflowId,
           stepId: step.id,
-          digitalWorkerName, // Use main digital worker name, not sub-agent
+          digitalWorkerName,
           action: {
-            type: 'guidance_requested',
+            type: hasFileRequest ? 'file_upload_requested' : (hasImagePreview ? 'image_preview' : 'guidance_requested'),
             payload: {
               step: step.label,
               message: guidanceQuestion,
               needsGuidance: true,
+              // File request fields
+              requestedFileType: result.requestedFileType,
+              fileDescription: result.fileDescription,
+              // Image preview fields
+              previewImageUrl: result.previewImageUrl,
+              previewImageCaption: result.previewImageCaption,
             },
           },
           timestamp: new Date(),
         },
       })
-      throw new Error('EXECUTION_PAUSED_FOR_GUIDANCE') // Throw error instead of returning
+      throw new Error('EXECUTION_PAUSED_FOR_GUIDANCE')
     }
 
     // Check if step requires review (decision steps or steps with blueprint that need approval)
@@ -516,7 +612,10 @@ export function approveReviewItem(reviewItem: ReviewItem): void {
 
   const state = executionStates.get(reviewItem.workflowId)
   const isError = reviewItem.action.type === 'error'
-  const isGuidance = reviewItem.action.type === 'guidance_requested' // Add this check
+  // Handle all guidance-related action types (including file uploads and image previews)
+  const isGuidance = reviewItem.action.type === 'guidance_requested' ||
+                     reviewItem.action.type === 'file_upload_requested' ||
+                     reviewItem.action.type === 'image_preview'
 
   // Store chat history/guidance in execution state for agent to use
   if (reviewItem.chatHistory && reviewItem.chatHistory.length > 0 && state) {
@@ -576,8 +675,49 @@ export function provideGuidanceToReviewItem(reviewItemId: string, message: strin
   // to the agent when approveReviewItem is called
 }
 
-// Reject review item
-export function rejectReviewItem(reviewItem: ReviewItem): void {
+// Reject review item (optionally retry with feedback)
+export function rejectReviewItem(reviewItem: ReviewItem, retryWithFeedback: boolean = false): void {
+  const workflow = getWorkflowById(reviewItem.workflowId)
+  
+  if (retryWithFeedback && workflow) {
+    // Store feedback in guidance context and retry the step
+    const state = executionStates.get(reviewItem.workflowId)
+    
+    if (state && reviewItem.chatHistory && reviewItem.chatHistory.length > 0) {
+      // Store the rejection feedback in guidance context
+      if (!state.guidanceContext) {
+        state.guidanceContext = []
+      }
+      state.guidanceContext.push({
+        stepId: reviewItem.stepId,
+        chatHistory: reviewItem.chatHistory,
+        timestamp: new Date(),
+      })
+      executionStates.set(reviewItem.workflowId, state)
+      
+      // Reset step and restart execution
+      state.isRunning = true
+      if (state.stepStartTimes) {
+        state.stepStartTimes.delete(reviewItem.stepId)
+      }
+      
+      emitControlRoomUpdate({
+        type: 'workflow_update',
+        data: {
+          workflowId: reviewItem.workflowId,
+          stepId: reviewItem.stepId,
+          message: `Retrying with feedback: ${reviewItem.action.type}`,
+          timestamp: new Date(),
+        },
+      })
+      
+      // Retry the step
+      executeWorkflowSteps(reviewItem.workflowId)
+      return
+    }
+  }
+  
+  // Just dismiss without retry
   emitControlRoomUpdate({
     type: 'workflow_update',
     data: {
